@@ -1,0 +1,96 @@
+/**
+ * Design tokens.
+ *
+ * Motion Inspector is dark by default, which is a product decision rather than
+ * a fashion: it lives beside video, and a bright panel next to a dark frame
+ * pulls the eye away from the thing being inspected. The light theme exists and
+ * is complete, but it is the alternative, not the baseline.
+ *
+ * The system is monochrome-first — one ink ramp, one surface ramp — with a
+ * single accent reserved for state that means something: the active event, the
+ * playhead, focus. Category colour is deliberately absent. Nine event
+ * categories rendered as nine hues would be a parrot at 320px wide, and the
+ * timeline would stop reading as an instrument.
+ */
+
+:root {
+  --mi-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', 'Helvetica Neue', Arial, sans-serif;
+  --mi-font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  --mi-radius-xs: 5px;
+  --mi-radius-sm: 7px;
+  --mi-radius-md: 10px;
+  --mi-radius-lg: 14px;
+  --mi-radius-pill: 999px;
+
+  /* Dark is the default theme, so it is the one declared on :root. */
+  --mi-surface: #0c0c0e;
+  --mi-surface-raised: #141417;
+  --mi-surface-sunken: #08080a;
+  --mi-surface-inverse: #f4f4f6;
+
+  --mi-border: rgba(255, 255, 255, 0.075);
+  --mi-border-strong: rgba(255, 255, 255, 0.16);
+
+  --mi-text: #f2f2f5;
+  --mi-text-muted: #9b9ba5;
+  --mi-text-subtle: #6a6a74;
+  --mi-text-inverse: #0c0c0e;
+
+  /* One accent. Technical green: reads as "live" and "measured", not as brand. */
+  --mi-accent: #3ddc97;
+  --mi-accent-soft: rgba(61, 220, 151, 0.14);
+
+  --mi-positive: #3ddc97;
+  --mi-caution: #e0b24d;
+  --mi-critical: #ff6f6f;
+
+  --mi-hover: rgba(255, 255, 255, 0.055);
+  --mi-track: rgba(255, 255, 255, 0.1);
+
+  --mi-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.36);
+  --mi-shadow-focus: 0 0 0 2px var(--mi-surface), 0 0 0 4px var(--mi-accent);
+
+  --mi-duration-fast: 130ms;
+  --mi-duration-base: 190ms;
+  --mi-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --mi-surface: #ffffff;
+  --mi-surface-raised: #ffffff;
+  --mi-surface-sunken: #f5f5f6;
+  --mi-surface-inverse: #111113;
+
+  --mi-border: rgba(17, 17, 19, 0.1);
+  --mi-border-strong: rgba(17, 17, 19, 0.18);
+
+  --mi-text: #111113;
+  --mi-text-muted: #5f5f69;
+  --mi-text-subtle: #8b8b95;
+  --mi-text-inverse: #fbfbfc;
+
+  --mi-accent: #0f9d63;
+  --mi-accent-soft: rgba(15, 157, 99, 0.12);
+
+  --mi-positive: #0f7a45;
+  --mi-caution: #9a6b06;
+  --mi-critical: #c02b2b;
+
+  --mi-hover: rgba(17, 17, 19, 0.05);
+  --mi-track: rgba(17, 17, 19, 0.1);
+
+  --mi-shadow-card: 0 1px 1px rgba(17, 17, 19, 0.04), 0 8px 24px rgba(17, 17, 19, 0.1);
+
+  color-scheme: light;
+}
+
+/* Motion is an enhancement, never a dependency. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --mi-duration-fast: 1ms;
+    --mi-duration-base: 1ms;
+  }
+}

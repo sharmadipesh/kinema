@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Motion Inspector — analysis</title>
+  </head>
+  <body>
+    <!--
+      Never visible. This document exists because an MV3 service worker cannot
+      decode video: there is no HTMLVideoElement in a worker context. Uploaded
+      files are decoded and sampled here, and the pixel math runs in a real Web
+      Worker this page owns — so nothing heavy touches the side panel's UI
+      thread, and the work survives the panel being closed.
+    -->
+    <script type="module" src="/src/offscreen/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,78 @@
+@import './tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * The side panel is a tall, user-resizable surface — roughly 320 to 500px wide
+ * — not a popup sized to its own content. Both dimensions come from the frame:
+ * a fixed width leaves dead space, and a body that collapses to content height
+ * makes `h-full` meaningless and strands the footer mid-panel.
+ */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  width: 100%;
+  min-width: 300px;
+  font-family: var(--mi-font-sans);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--mi-text);
+  background: var(--mi-surface);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@layer base {
+  button {
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--mi-accent);
+    outline-offset: 2px;
+    border-radius: var(--mi-radius-xs);
+  }
+
+  /* Timecodes must not shuffle as digits change. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  .mi-scroll {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--mi-border-strong) transparent;
+  }
+
+  .mi-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .mi-scroll::-webkit-scrollbar-thumb {
+    background-color: var(--mi-border-strong);
+    border-radius: var(--mi-radius-pill);
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  /* Wide content scrolls inside its own box; the panel body never does. */
+  .mi-scroll-x {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--mi-border-strong) transparent;
+  }
+}

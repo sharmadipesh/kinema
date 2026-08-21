@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Motion Inspector — preview</title>
+    <script src="./chrome-stub.js"></script>
+    <link rel="stylesheet" href="../dist/assets/sidepanel.css" />
+    <style>
+      /*
+        The panel is pinned to an explicit width here rather than left to the
+        browser window, because the whole point of this harness is checking the
+        layout at the widths a Chrome side panel actually occupies — and a
+        viewport that quietly stays at 980px would verify nothing.
+        ?w=320 · ?w=380 · ?w=420
+      */
+      html, body { height: 100%; margin: 0; background: #050506; font-family: -apple-system, sans-serif; }
+      #stage { display: flex; gap: 24px; padding: 16px; align-items: flex-start; }
+      .rig { display: flex; flex-direction: column; gap: 6px; }
+      .rig > figcaption { color: #6a6a74; font-size: 11px; font-family: ui-monospace, monospace; }
+      .panel { height: calc(100vh - 60px); border: 1px solid rgba(255,255,255,0.12); overflow: hidden; resize: horizontal; }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <script type="module">
+      const params = new URLSearchParams(location.search || location.hash.replace(/^#/, ''));
+      const widths = (params.get('w') ?? '380').split(',').map(Number);
+      const stage = document.getElementById('stage');
+
+      for (const [index, width] of widths.entries()) {
+        const rig = document.createElement('figure');
+        rig.className = 'rig';
+        rig.style.margin = '0';
+        const caption = document.createElement('figcaption');
+        caption.textContent = `${width}px`;
+        const panel = document.createElement('div');
+        panel.className = 'panel';
+        panel.style.width = `${width}px`;
+        // Only the first rig gets the real root id, so the bundle mounts once.
+        panel.innerHTML = `<div id="${index === 0 ? 'root' : `root-${index}`}" style="height:100%"></div>`;
+        rig.append(caption, panel);
+        stage.append(rig);
+      }
+
+      await import('../dist/sidepanel.js');
+    </script>
+  </body>
+</html>
