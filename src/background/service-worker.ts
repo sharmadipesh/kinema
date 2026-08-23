@@ -210,7 +210,10 @@ async function handlePanelRequest(request: PanelRequest): Promise<PanelResponse>
         source: state.source,
         label: state.session.label,
         signal,
-        resumeFromArtifacts: request.stage === 'interpretation',
+        // Every target resumes from artifacts; they differ in how much of the
+        // interpretation they redo, which the orchestrator decides.
+        resumeFromArtifacts: true,
+        retryTarget: request.stage,
       });
       return { for: 'panel:retry-stage', started: true };
     }

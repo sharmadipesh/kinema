@@ -2,6 +2,7 @@ import type { AnalysisRole, MotionAnalysis, MotionEvent } from '../../types/moti
 import { showsFor } from './RoleFilter.tsx';
 import { MotionGraph } from './MotionGraph.tsx';
 import { formatClock, formatPreciseTime } from '../../utils/time.ts';
+import { FOOTAGE_STATES, FOOTAGE_STATE_LABELS, type FootageState } from '../../types/project.ts';
 import { Bullets, Numbered, Section } from './parts.tsx';
 import { Unavailable } from './StoryView.tsx';
 
@@ -64,10 +65,15 @@ export function EditView({
   analysis,
   role,
   onSeek,
+  footage,
+  onFootage,
 }: {
   analysis: MotionAnalysis;
   role: AnalysisRole;
   onSeek(time: number): void;
+  /** Per-item status the user has set. Absent in read-only contexts. */
+  footage?: Record<string, FootageState>;
+  onFootage?(item: string, state: FootageState): void;
 }) {
   const toolkit = analysis.blueprint?.editorToolkit;
   const speedEvents = analysis.events.filter(
@@ -178,12 +184,46 @@ export function EditView({
       ) : null}
 
       {showsFor(role, 'footage') && toolkit.footageChecklist.length > 0 ? (
-        <Section title="Footage checklist" copy={toolkit.footageChecklist.map((item) => `- [ ] ${item}`)}>
-          <ul className="mt-1 space-y-1">
+        <Section
+          title="Footage checklist"
+          copy={toolkit.footageChecklist.map(
+            (item) => `- [${(footage?.[item] ?? 'unset') === 'available' ? 'x' : ' '}] ${item} (${FOOTAGE_STATE_LABELS[footage?.[item] ?? 'unset']})`,
+          )}
+        >
+          {/*
+            A working checklist, not a rendered list. The decorative square that
+            used to sit here looked like a checkbox and did nothing, which is a
+            worse promise than no checkbox at all.
+          */}
+          <ul className="mt-1 space-y-1.5">
             {toolkit.footageChecklist.map((item) => (
-              <li key={item} className="flex gap-1.5 text-xs leading-relaxed text-ink-muted">
-                <span aria-hidden="true" className="mt-[3px] h-[9px] w-[9px] shrink-0 rounded-[2px] border border-line-strong" />
-                <span>{item}</span>
+              <li key={item}>
+                <p className="text-xs leading-relaxed text-ink-muted">{item}</p>
+                {onFootage ? (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {FOOTAGE_STATES.filter((state) => state !== 'unset').map((state) => {
+                      const active = (footage?.[item] ?? 'unset') === state;
+                      return (
+                        <button
+                          key={state}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          aria-label={`${item}: ${FOOTAGE_STATE_LABELS[state]}`}
+                          onClick={() => onFootage(item, active ? 'unset' : state)}
+                          className={[
+                            'rounded-pill border px-1.5 py-0.5 text-2xs transition-colors',
+                            active
+                              ? 'border-[var(--mi-accent)] bg-[var(--mi-accent-soft)] text-accent'
+                              : 'border-line text-ink-subtle hover:text-ink',
+                          ].join(' ')}
+                        >
+                          {FOOTAGE_STATE_LABELS[state]}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </li>
             ))}
           </ul>

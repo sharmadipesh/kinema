@@ -7,6 +7,9 @@ import { Segmented } from '../../components/ui/Segmented.tsx';
 import { copyText } from '../../utils/clipboard.ts';
 import { resolveStageFrame, stageFrameNotice, type StageFrame } from './story-frames.ts';
 import { boardToMarkdown, stageToMarkdown } from './story-markdown.ts';
+import { StageEditor } from './StageEditor.tsx';
+import { editedFields, type ProjectRecord, type StageEdit, type StageStructureEdit } from '../../types/project.ts';
+import { ExportMenu } from './ExportMenu.tsx';
 
 /**
  * The Story board: how the edit's energy evolves from open to close.
@@ -31,6 +34,10 @@ export function StoryView({
   title,
   canSeek,
   onSeek,
+  project,
+  onEditStage,
+  onResetStage,
+  onStructure,
 }: {
   analysis: MotionAnalysis;
   frames: EvidenceFrame[];
@@ -45,8 +52,14 @@ export function StoryView({
    */
   canSeek: boolean;
   onSeek(time: number): void;
+  /** The user's layer. Absent in read-only contexts such as a preview. */
+  project?: ProjectRecord;
+  onEditStage?(stageId: string, patch: Partial<StageEdit>): void;
+  onResetStage?(stageId: string, field: keyof StageEdit): void;
+  onStructure?(edit: StageStructureEdit): void;
 }) {
   const [board, setBoard] = useState<Board>('flow');
+  const [editing, setEditing] = useState<string | null>(null);
   const stages = analysis.blueprint?.storyStages ?? [];
   const energy = analysis.energy ?? [];
 
@@ -71,11 +84,11 @@ export function StoryView({
             { value: 'sheet', label: 'Contact sheet', count: stages.length },
           ]}
         />
-        <CopyButton
-          label="Copy board"
-          text={() => boardToMarkdown(analysis, title)}
-          done="Board copied"
-        />
+        {project ? (
+          <ExportMenu analysis={analysis} project={project} frames={frames} title={title} />
+        ) : (
+          <CopyButton label="Copy board" text={() => boardToMarkdown(analysis, title)} done="Board copied" />
+        )}
       </div>
 
       {energy.length > 0 ? <EnergyMap energy={energy} duration={analysis.video.duration} /> : null}
@@ -90,6 +103,27 @@ export function StoryView({
               isLast={index === stages.length - 1}
               canSeek={canSeek}
               onSeek={onSeek}
+              edited={editedFields(project?.stageEdits[stage.id])}
+              approved={project?.stageEdits[stage.id]?.approved ?? false}
+              {...(onEditStage
+                ? {
+                    editor: {
+                      open: editing === stage.id,
+                      onToggle: () => setEditing((current) => (current === stage.id ? null : stage.id)),
+                      frames,
+                      edit: project?.stageEdits[stage.id],
+                      canSplit: stage.endTime - stage.startTime > 2.4,
+                      canMerge: index < stages.length - 1,
+                      onEdit: (patch: Partial<StageEdit>) => onEditStage(stage.id, patch),
+                      onReset: (field: keyof StageEdit) => onResetStage?.(stage.id, field),
+                      onSplit: (atTime: number) => onStructure?.({ kind: 'split', stageId: stage.id, atTime }),
+                      onMerge: () => {
+                        const next = stages[index + 1];
+                        if (next) onStructure?.({ kind: 'merge', stageId: stage.id, withStageId: next.id });
+                      },
+                    },
+                  }
+                : {})}
             />
           ))}
         </section>
@@ -276,18 +310,38 @@ function StageThumb({
   );
 }
 
+interface StageEditorBinding {
+  open: boolean;
+  onToggle(): void;
+  frames: EvidenceFrame[];
+  edit: StageEdit | undefined;
+  canSplit: boolean;
+  canMerge: boolean;
+  onEdit(patch: Partial<StageEdit>): void;
+  onReset(field: keyof StageEdit): void;
+  onSplit(atTime: number): void;
+  onMerge(): void;
+}
+
 function StageCard({
   stage,
   resolved,
   isLast,
   canSeek,
   onSeek,
+  edited,
+  approved,
+  editor,
 }: {
   stage: StoryStage;
   resolved: StageFrame;
   isLast: boolean;
   canSeek: boolean;
   onSeek(time: number): void;
+  edited: string[];
+  approved: boolean;
+  /** Absent when the board is read-only. */
+  editor?: StageEditorBinding;
 }) {
   const rows: Array<[string, string | undefined]> = [
     ['Purpose', stage.purpose],
@@ -368,13 +422,42 @@ function StageCard({
           </div>
         ) : null}
 
-        <div className="flex justify-end border-t border-line px-1.5 py-1">
-          <CopyButton
-            label="Copy stage"
-            text={() => stageToMarkdown(stage)}
-            done="Stage copied"
-          />
+        <div className="flex items-center justify-end gap-1 border-t border-line px-1.5 py-1">
+          {/* Provenance, stated rather than implied: a hand-edited beat should
+              never be mistaken for one the analysis produced. */}
+          {approved ? <span className="mr-auto text-2xs text-accent">Approved</span> : null}
+          {edited.length > 0 ? (
+            <span className={`text-2xs text-ink-subtle ${approved ? '' : 'mr-auto'}`}>Edited: {edited.join(', ')}</span>
+          ) : null}
+          {editor ? (
+            <button
+              type="button"
+              onClick={editor.onToggle}
+              aria-expanded={editor.open}
+              className="rounded-xs px-1.5 py-0.5 text-2xs text-ink-subtle transition-colors hover:bg-[var(--mi-hover)] hover:text-ink"
+            >
+              {editor.open ? 'Close' : 'Edit'}
+            </button>
+          ) : null}
+          <CopyButton label="Copy stage" text={() => stageToMarkdown(stage)} done="Stage copied" />
         </div>
+
+        {editor?.open ? (
+          <div className="border-t border-line p-1.5">
+            <StageEditor
+              stage={stage}
+              edit={editor.edit}
+              frames={editor.frames}
+              canSplit={editor.canSplit}
+              canMerge={editor.canMerge}
+              onEdit={editor.onEdit}
+              onReset={editor.onReset}
+              onSplit={editor.onSplit}
+              onMerge={editor.onMerge}
+              onClose={editor.onToggle}
+            />
+          </div>
+        ) : null}
       </article>
 
       {!isLast ? (

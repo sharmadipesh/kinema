@@ -1,6 +1,7 @@
 import { STORAGE } from '../config.ts';
 import type { Candidate, CandidateCluster, EvidenceFrame, FrameMetrics } from '../types/analysis.ts';
 import { ANALYSIS_VERSION, type Scene, type VideoMetadata } from '../types/motion.ts';
+import type { InterpretResult } from './interpret-result.ts';
 import { log } from '../utils/logger.ts';
 
 /**
@@ -41,6 +42,15 @@ export interface AnalysisArtifacts {
    * already here.
    */
   paletteBins: number[];
+  /**
+   * What the model already said, when it said anything.
+   *
+   * Stored so a narrower retry — rebuilding a truncated blueprint, or just
+   * re-capturing a stage frame — does not re-run four batches of vision calls
+   * whose answers are already on disk. Absent for an analysis that failed
+   * before interpretation, in which case only a full retry is possible.
+   */
+  interpretation?: InterpretResult;
   stats: {
     coarseFrames: number;
     mediumFrames: number;

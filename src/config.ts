@@ -29,6 +29,14 @@ export const STORAGE = {
   historyKey: 'mi:history',
   sessionKey: 'mi:session',
   artifactsKey: 'mi:artifacts',
+  /**
+   * The user's own layer over an analysis: recreation mode, brief, stage edits,
+   * footage status and manual confirmations. Suffixed with the analysis id.
+   *
+   * Separate from `historyKey` on purpose — a retry rewrites the analysis
+   * wholesale, and hand edits have to survive that.
+   */
+  projectKey: 'mi:project',
   // NOTE: the credential storage key is deliberately NOT here. This module is
   // reachable from the content bundle, and a constant here would land in the
   // page bundle — which the build's leak guard rightly rejects. It lives in

@@ -26,6 +26,7 @@ import {
   type VideoMetadata,
 } from '../types/motion.ts';
 import type { AnalysisSource } from '../types/video.ts';
+import type { RetryTarget } from '../types/messages.ts';
 import { attachCoverage } from '../analysis/coverage.ts';
 import { deriveEnergy } from '../analysis/energy.ts';
 import { extractPalette } from '../analysis/palette.ts';
@@ -48,6 +49,7 @@ import {
   reconcileAnalysis,
 } from '../services/transport/openai-transport.ts';
 import type { GlobalContext, ModelEvent, Reconciliation } from '../services/validate-motion.ts';
+import type { InterpretResult } from './interpret-result.ts';
 import type { PromptEvent } from '../services/prompts.ts';
 import { isFriendlyError, localError, unknownError } from '../utils/errors.ts';
 import { createId } from '../utils/id.ts';
@@ -96,6 +98,17 @@ export interface RunContext {
    * somebody's video.
    */
   resumeFromArtifacts?: boolean;
+  /**
+   * How much of the interpretation to redo.
+   *
+   * `interpretation` re-runs every model pass. `blueprint` keeps the events and
+   * the timeline already paid for and redoes only the production plan — the
+   * common case, since the blueprint is the largest single call and the one
+   * most likely to be truncated. `stage-frames` re-captures the story frames
+   * and makes no model call at all, which is the right answer when the only
+   * thing missing is a picture.
+   */
+  retryTarget?: RetryTarget;
 }
 
 export async function runAnalysis(context: RunContext): Promise<void> {
@@ -115,7 +128,10 @@ export async function runAnalysis(context: RunContext): Promise<void> {
 
     const stored = context.resumeFromArtifacts ? await readArtifacts(sessionId) : null;
     if (stored) {
-      log.info('resuming from stored artifacts', { candidates: stored.candidates.length });
+      log.info('resuming from stored artifacts', {
+        candidates: stored.candidates.length,
+        target: context.retryTarget ?? 'interpretation',
+      });
       await resumeFromArtifacts(context, stored, sampler);
       return;
     }
@@ -274,6 +290,24 @@ export async function runAnalysis(context: RunContext): Promise<void> {
       label: context.label,
     });
 
+    // Recorded now that the model has answered. A blueprint retry a minute from
+    // now should not re-ask questions we already have answers to.
+    await saveArtifacts({
+      version: ANALYSIS_VERSION,
+      sessionId,
+      analysisId,
+      label: context.label,
+      storedAt: Date.now(),
+      video,
+      candidates: refined,
+      clusters,
+      scenes,
+      frames,
+      paletteBins,
+      interpretation,
+      stats: { coarseFrames: coarse.length, mediumFrames: mediumCount, fineFrames: fineFrameCount },
+    });
+
     // -- Normalisation -------------------------------------------------------
     advance(sessionId, 'normalizing');
     const analysis = attachCoverage(
@@ -393,7 +427,18 @@ async function resumeFromArtifacts(
    */
   await sampler.beginSession();
 
-  const interpretation = await interpret({
+  /**
+   * A narrower retry skips the passes it is not for.
+   *
+   * `blueprint` and `stage-frames` both keep the interpretation already paid
+   * for — the events, their titles and the reconciliation — and rebuild only
+   * what follows. Re-running four batches of vision calls to fix a missing
+   * picture would be charging the user for our own gap.
+   */
+  const target = context.retryTarget ?? 'interpretation';
+  const reuse = target !== 'interpretation' ? stored.interpretation : undefined;
+
+  const interpretation = reuse ?? (await interpret({
     sessionId,
     signal,
     sampler,
@@ -404,7 +449,7 @@ async function resumeFromArtifacts(
     ...(rhythm ? { rhythm } : {}),
     profile: motionProfile,
     label: stored.label,
-  });
+  }));
 
   advance(sessionId, 'normalizing');
   const analysis = attachCoverage(
@@ -663,15 +708,6 @@ interface InterpretInput {
   rhythm?: EditRhythm;
   profile: MotionProfile;
   label: string;
-}
-
-interface InterpretResult {
-  events: ModelEvent[];
-  global?: GlobalContext;
-  reconciliation?: Reconciliation;
-  calls: number;
-  globalFrames: number;
-  localOnly?: boolean;
 }
 
 /**

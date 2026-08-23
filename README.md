@@ -24,6 +24,9 @@ video → motion analysis → timeline → event → timestamp → explanation �
 - [How it works](#how-it-works)
 - [The analysis pipeline](#the-analysis-pipeline)
 - [The story board and the editor workspace](#the-story-board-and-the-editor-workspace)
+- [Recreation readiness](#recreation-readiness)
+- [Editing the board](#editing-the-board)
+- [Handoff](#handoff)
 - [Execution contexts, and why each exists](#execution-contexts-and-why-each-exists)
 - [What it can and cannot read](#what-it-can-and-cannot-read)
 - [Security model](#security-model)
@@ -125,6 +128,66 @@ video is bound — and when one is not, the control is absent rather than presen
 
 Sections the blueprint could not produce are named, with the reason, in **Analysis coverage** on the
 Overview. They used to be recorded only where a failed blueprint made them unreachable.
+
+## Recreation readiness
+
+The product's central question is not "did the analysis finish" but **"can this
+actually be rebuilt"**, and those have different answers. Readiness is a state
+machine rather than a count, because a count of satisfied sections reported
+`9/9` over an analysis with a declared gap, no frame for two of its stages, and
+no live video to seek.
+
+Four things make it truthful:
+
+**It asks what you are doing.** A missing lighting plan is irrelevant to
+someone studying an edit and required for someone shooting it; unanalysed audio
+is a footnote for a picture study and a blocker for cutting to music. One fixed
+set of weights has to be wrong for three of the four modes, so importance is a
+function of the chosen mode — and no mode is assumed, because grading against
+one the user did not pick reports a readiness that is not theirs.
+
+**One blocker outranks any number of green rows.** `optional` never affects a
+verdict in either direction, and the next action is chosen by precedence:
+corrupted data, then missing evidence, then a required decision, then a missing
+plan section. A gear suggestion can never be recommended ahead of a broken
+board.
+
+**Structure is validated, not assumed.** [`consistency.ts`](src/analysis/consistency.ts)
+checks stage identity, ranges, coverage, frame ownership, Story/Edit agreement
+and cut bounds. Most of those hold by construction today — and stop holding the
+moment a person splits or merges a beat, which is exactly why it was written
+before the editing that needs it.
+
+**What only a person can answer is marked as theirs.** "Location secured" is a
+promise and "five cuts measured" is a measurement; they never wear the same
+tick.
+
+## Editing the board
+
+The board is generated, so it will sometimes be wrong in ways only the person
+watching can see. Stages can be renamed, re-framed against a different captured
+frame, annotated, approved, split and merged.
+
+Measured values are not editable. Start and end times, shot counts and energy
+came from pixels and no amount of prose can overwrite them — splits and merges
+do change ranges, and go through a boundary that must be a real time strictly
+inside the stage, after which shot counts are **recounted** from the scene list
+rather than apportioned. Edits live in their own record keyed by analysis id,
+not inside `MotionAnalysis`, so a retry that rewrites the analysis cannot
+discard them.
+
+## Handoff
+
+Story board and recreation brief as Markdown, a printable contact sheet as
+self-contained HTML, cut list and footage checklist as CSV, and a lossless JSON
+for backup. Every format carries the measured/interpreted split, the sections
+that could not be produced, and a mark on anything hand-edited — an export that
+drops its caveats reads as complete to someone who never saw them.
+
+Cut lists carry measured seconds, not SMPTE. Converting needs a frame rate this
+product frequently cannot measure and refuses to guess. **EDL, FCPXML and
+Premiere XML are deliberately absent** for the same reason: an NLE will happily
+accept an interchange file with a wrong timebase.
 
 ## Execution contexts, and why each exists
 
@@ -307,11 +370,12 @@ you ask for it.
 npm run verify
 ```
 
-269 unit and component tests over the parts where correctness is checkable without a browser: frame
+350 unit and component tests over the parts where correctness is checkable without a browser: frame
 measurement, motion estimation, candidate detection, threshold bounding, gradual-transition
 detection, clustering, refinement, scene segmentation, rhythm derivation, normalisation and
 degradation, Editing DNA, model-output validation across all four passes, blueprint validation,
-coverage derivation, stage-frame resolution, board export, cross-frame video ordering, SPA route
+coverage derivation, stage-frame resolution, board export, recreation readiness across all four
+modes, structural consistency, stage split and merge, project-record validation, handoff serialisation, cross-frame video ordering, SPA route
 keying, history migration, timeline label layout, timecode formatting, and the settings whitelist.
 
 Component tests render the real components into jsdom with `react-dom/client` — no testing-library

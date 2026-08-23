@@ -43,7 +43,14 @@ import { CreateView } from './blueprint/CreateView.tsx';
 import { EditView } from './blueprint/EditView.tsx';
 import { StoryView, useAnalysisFrames } from './blueprint/StoryView.tsx';
 import { RoleFilter } from './blueprint/RoleFilter.tsx';
-import { ReadinessCheck } from './blueprint/Readiness.tsx';
+import { ReadinessPanel } from './blueprint/ReadinessPanel.tsx';
+import { BriefPanel } from './blueprint/BriefPanel.tsx';
+import { deriveRecreationReadiness } from '../analysis/recreation-readiness.ts';
+import { applyStructure } from '../analysis/stage-structure.ts';
+import { useProject } from '../hooks/useProject.ts';
+import { applyStageEdit } from '../types/project.ts';
+import type { ReadinessAction } from '../types/readiness.ts';
+import type { RetryTarget } from '../types/messages.ts';
 
 type Mode = 'detect' | 'upload';
 
@@ -209,6 +216,40 @@ export function AnalyzeScreen({
     return firstFrameId?.split(':')[0] ?? null;
   }, [analysis]);
   const allFrames = useAnalysisFrames(analysisId);
+  const projectState = useProject(analysisId);
+
+  /**
+   * The stages the user is actually looking at: generated, then structure edits
+   * replayed, then per-stage corrections laid over the top. Everything
+   * downstream — the board, readiness, every export — reads this rather than
+   * the raw blueprint, so there is one version of the board rather than two
+   * that drift.
+   */
+  const resolvedStages = useMemo(() => {
+    const generated = analysis?.blueprint?.storyStages ?? [];
+    if (generated.length === 0) return generated;
+    const structured = applyStructure(
+      { stages: generated, scenes: analysis?.scenes ?? [], energy: analysis?.energy ?? [], events: analysis?.events ?? [] },
+      projectState.project.structure,
+    );
+    return structured.map((stage) => applyStageEdit(stage, projectState.project.stageEdits[stage.id]));
+  }, [analysis, projectState.project.structure, projectState.project.stageEdits]);
+
+  /** The analysis as edited, so readiness and exports agree with the screen. */
+  const effectiveAnalysis = useMemo(() => {
+    if (!analysis?.blueprint) return analysis;
+    return { ...analysis, blueprint: { ...analysis.blueprint, storyStages: resolvedStages } };
+  }, [analysis, resolvedStages]);
+
+  const readiness = useMemo(() => {
+    if (!effectiveAnalysis) return null;
+    return deriveRecreationReadiness({
+      analysis: effectiveAnalysis,
+      frames: allFrames,
+      project: projectState.project,
+      canSeek: analysedVideoId !== null,
+    });
+  }, [effectiveAnalysis, allFrames, projectState.project, analysedVideoId]);
 
   const openEvent = useMemo(
     () => analysis?.events.find((event) => event.id === openEventId) ?? null,
@@ -352,6 +393,58 @@ export function AnalyzeScreen({
     [request],
   );
 
+  /**
+   * Where a readiness action goes.
+   *
+   * Targets are `tab#section`, not just a tab. Being dropped at the top of
+   * Create with nine sections and no idea which one was the problem is barely
+   * better than no action at all, so the tab switch is followed by a scroll to
+   * the element that actually needs attention.
+   */
+  const runAction = useCallback(
+    (action: ReadinessAction) => {
+      if (action.kind === 'detect-video') {
+        void detect(true);
+        return;
+      }
+      /**
+       * A retry from readiness rebuilds only what is missing.
+       *
+       * `stage-frames` re-captures the story frames and makes no model call at
+       * all; `blueprint` keeps the events already paid for. Sending every
+       * retry through the full interpretation pass — which is all the contract
+       * allowed before — charged the user four batches of vision calls to
+       * recover a missing picture.
+       */
+      if (action.kind === 'retry') {
+        if (!session) return;
+        // `blueprint` keeps the events already paid for. Sending every retry
+        // through the full interpretation pass — all the contract allowed
+        // before — charged four batches of vision calls to rebuild a plan.
+        const stage: RetryTarget = 'blueprint';
+        void request({ type: 'panel:retry-stage', sessionId: session.id, stage }).catch(() => undefined);
+        return;
+      }
+      // `select-frame` navigates to the picker rather than re-running anything.
+      // A button labelled "Choose frames" that silently started a background
+      // re-analysis would be the worst kind of surprise.
+      const [tab, section] = (action.target ?? '').split('#');
+      if (tab === 'brief' || action.kind === 'choose' || action.kind === 'confirm') {
+        setResultTab('brief');
+      } else if (tab === 'overview' || tab === 'story' || tab === 'create' || tab === 'edit') {
+        setResultTab(tab);
+      }
+      if (!section) return;
+      // After the tab has painted. There is no render callback to hook here and
+      // a frame is enough for React to commit the new subtree.
+      requestAnimationFrame(() => {
+        const target = document.getElementById(`${tab === 'brief' ? 'brief' : tab}-${section}`) ?? document.getElementById(section);
+        target?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      });
+    },
+    [detect, request, session],
+  );
+
   // -- Render ----------------------------------------------------------------
 
   if (openEvent && analysis) {
@@ -393,6 +486,7 @@ export function AnalyzeScreen({
     // broken feature. Story and Create only appear once there is content.
     const tabs: ResultTab[] = [
       'overview',
+      'brief',
       ...(blueprint?.storyStages.length ? (['story'] as const) : []),
       ...(blueprint && (blueprint.creativeDirection.length > 0 || blueprint.equipment.length > 0 || blueprint.camera)
         ? (['create'] as const)
@@ -448,24 +542,48 @@ export function AnalyzeScreen({
           </nav>
         ) : null}
 
+        {/*
+          Above everything, and on every tab. The old counter lived at the
+          bottom of Overview inside a collapsed accordion, which put the most
+          product-shaped decision in the panel below a list of frame counts.
+        */}
+        {readiness ? <ReadinessPanel readiness={readiness} onAction={runAction} /> : null}
+
         {/* The role filter reorders recommendations, so it belongs to the views
             that have some. Overview is measurement, and Story is a fixed
             chronology — a control that visibly does nothing in either is worse
             than one that is simply absent. */}
         {active === 'create' || active === 'edit' ? <RoleFilter role={role} onChange={setRole} /> : null}
 
-        {active === 'story' ? (
+        {active === 'brief' ? (
+          <BriefPanel
+            project={projectState.project}
+            onMode={projectState.setMode}
+            onBrief={projectState.patchBrief}
+            onConfirm={projectState.confirm}
+          />
+        ) : active === 'story' ? (
           <StoryView
-            analysis={analysis}
+            analysis={effectiveAnalysis ?? analysis}
             frames={allFrames}
             title={session?.label ?? 'Analysis'}
             canSeek={analysedVideoId !== null}
             onSeek={(time) => void seekTo(time)}
+            project={projectState.project}
+            onEditStage={projectState.editStage}
+            onResetStage={projectState.resetStage}
+            onStructure={projectState.pushStructure}
           />
         ) : active === 'create' ? (
           <CreateView analysis={analysis} role={role} />
         ) : active === 'edit' ? (
-          <EditView analysis={analysis} role={role} onSeek={(time) => void seekTo(time)} />
+          <EditView
+            analysis={effectiveAnalysis ?? analysis}
+            role={role}
+            onSeek={(time) => void seekTo(time)}
+            footage={projectState.project.footage}
+            onFootage={projectState.setFootage}
+          />
         ) : (
           <>
         <Timeline
@@ -511,7 +629,6 @@ export function AnalyzeScreen({
               ? { unavailable: analysis.blueprint.unavailable }
               : {})}
           />
-          <ReadinessCheck analysis={analysis} onJump={setResultTab} />
         </div>
 
         <EventList
@@ -722,13 +839,14 @@ function pickVideo(videos: DetectedVideo[], current: string | null): string | nu
   return videos.find((video) => video.likelyActive)?.id ?? videos[0]?.id ?? null;
 }
 
-type ResultTab = 'overview' | 'story' | 'create' | 'edit';
+type ResultTab = 'overview' | 'story' | 'create' | 'edit' | 'brief';
 
 const TAB_LABELS: Record<ResultTab, string> = {
   overview: 'Overview',
   story: 'Story',
   create: 'Create',
   edit: 'Edit',
+  brief: 'Brief',
 };
 
 function titleForError(error: FriendlyError): string {

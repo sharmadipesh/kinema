@@ -1,9 +1,8 @@
 import { APP_NAME } from '../config.ts';
 import { Segmented } from '../components/ui/Segmented.tsx';
-import { clearFrames } from '../storage/frame-store.ts';
-import { clearHistory } from '../storage/history.ts';
 import type { Settings, ThemePreference } from '../types/domain.ts';
 import { ApiKeyField } from './ApiKeyField.tsx';
+import { StorageSection } from './StorageSection.tsx';
 
 export function SettingsPanel({
   settings,
@@ -73,22 +72,7 @@ export function SettingsPanel({
       </Section>
 
       <Section title="Data" description={`Everything ${APP_NAME} keeps lives on this device.`}>
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            type="button"
-            onClick={() => {
-              void clearHistory();
-              void clearFrames();
-            }}
-            className="rounded-sm border border-line bg-surface-raised px-2 py-1 text-xs text-ink transition-colors hover:bg-[var(--mi-hover)]"
-          >
-            Clear history and frames
-          </button>
-        </div>
-        <p className="text-2xs leading-relaxed text-ink-subtle">
-          Analyses are stored locally and never leave this device. During an analysis, a small number of sampled frames
-          are sent to OpenAI using your key — the video file itself never is.
-        </p>
+        <StorageSection />
       </Section>
     </div>
   );

@@ -749,14 +749,12 @@ export const ROLE_LABELS: Record<AnalysisRole, string> = {
   colorist: 'Colourist',
 };
 
-/** One row of the readiness check. Complete only when the data is really there. */
-export interface ReadinessItem {
-  label: string;
-  ready: boolean;
-  detail: string;
-  /** Which section to jump to when it is missing. */
-  tab?: 'overview' | 'story' | 'create' | 'edit';
-}
+/**
+ * NOTE: the old `ReadinessItem` lived here — a label, a boolean and a tab.
+ * Recreation readiness is now a state machine in `types/readiness.ts`, because
+ * a boolean cannot express "usable, but you have to choose a tier" and a count
+ * of booleans reported `9/9` over an analysis nobody could act on.
+ */
 
 export interface ProductionBlueprint {
   creativeIntent?: { labels: string[]; why: string };

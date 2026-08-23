@@ -14,6 +14,16 @@ import type { AnalysisSource, DetectedVideo, FrameAccess, FrameAccessReason, See
  * under `src/content/` even reaches the module that holds it.
  */
 
+/**
+ * What a retry is allowed to redo.
+ *
+ * One target — a blanket re-run of interpretation — meant a failed blueprint
+ * cost a second pass over every event batch, and a missing stage frame could
+ * only be fixed by redoing all of it. Each target below preserves strictly more
+ * than the one above, and `stage-frames` costs no model call at all.
+ */
+export type RetryTarget = 'interpretation' | 'blueprint' | 'stage-frames';
+
 export type Ok<T> = { ok: true; data: T };
 export type Err = { ok: false; error: FriendlyError };
 export type Result<T> = Ok<T> | Err;
@@ -34,7 +44,7 @@ export type PanelRequest =
   | { type: 'panel:register-upload'; upload: UploadedVideo }
   | { type: 'panel:start-analysis'; source: AnalysisSource }
   | { type: 'panel:cancel-analysis'; sessionId: string }
-  | { type: 'panel:retry-stage'; sessionId: string; stage: 'interpretation' }
+  | { type: 'panel:retry-stage'; sessionId: string; stage: RetryTarget }
   | { type: 'panel:clear-analysis' }
   | { type: 'panel:seek'; videoId: string; timestamp: number; play: boolean }
   | { type: 'panel:set-sync'; videoId: string; enabled: boolean }

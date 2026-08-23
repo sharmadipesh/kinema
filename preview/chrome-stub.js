@@ -10,7 +10,22 @@
 (function () {
   const KEY = 'sk-' + 'p'.repeat(44) + 'demo';
 
-  const local = { 'mi:credentials': { key: KEY, savedAt: Date.now(), verifiedAt: Date.now() }, 'mi:history': history() };
+  const local = {
+    'mi:credentials': { key: KEY, savedAt: Date.now(), verifiedAt: Date.now() },
+    'mi:history': history(),
+    // A project record, so the harness shows readiness in its graded state
+    // rather than only the "choose a mode" prompt.
+    'mi:project:analysis-1': {
+      analysisId: 'analysis-1',
+      updatedAt: Date.now(),
+      mode: 'shoot',
+      brief: { tier: 'creator' },
+      stageEdits: { 'stage-2': { name: 'Build (renamed)', approved: true } },
+      structure: [],
+      footage: {},
+      confirmations: { location: true },
+    },
+  };
   const sync = { 'mi:settings': { saveHistory: true, warnBeforeScrub: true, samplingRate: 'balanced', theme: 'dark' } };
   const session = {};
 
