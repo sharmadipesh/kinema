@@ -14,6 +14,15 @@ export interface SegmentedProps<T extends string> {
   disabled?: boolean;
   /** Lets a long option list scroll sideways inside a 320px panel. */
   scrollable?: boolean;
+  /**
+   * Wraps onto a second row instead of scrolling.
+   *
+   * Preferred over `scrollable` when the option list is long enough to run past
+   * the panel: a sideways scroller with the scrollbar hidden until it is used
+   * gives no sign that the options past the right edge exist at all, and at
+   * 320px that hid two of the seven event categories outright.
+   */
+  wrap?: boolean;
 }
 
 /**
@@ -30,14 +39,16 @@ export function Segmented<T extends string>({
   onChange,
   disabled = false,
   scrollable = false,
+  wrap = false,
 }: SegmentedProps<T>) {
   return (
     <div
       role="radiogroup"
       aria-label={label}
       className={[
-        'inline-flex items-center gap-0.5 rounded-md bg-surface-sunken p-0.5',
-        scrollable ? 'mi-scroll-x max-w-full' : '',
+        'items-center gap-0.5 rounded-md bg-surface-sunken p-0.5',
+        wrap ? 'flex flex-wrap' : 'inline-flex',
+        scrollable && !wrap ? 'mi-scroll-x max-w-full' : '',
       ].join(' ')}
     >
       {options.map((option) => {

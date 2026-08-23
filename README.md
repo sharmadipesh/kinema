@@ -1,6 +1,11 @@
-# Motion Inspector
+# KINEMA
 
 **Understand how any video moves.**
+
+> The npm package is still named `motion-inspector`, and so are the log prefix
+> and the IndexedDB database. Everything a user reads comes from `APP_NAME` in
+> [`src/config.ts`](src/config.ts); the internal names are left alone because
+> renaming the database would orphan every stored frame.
 
 A Chrome side-panel extension that inspects a video you are watching — or one you upload — and
 explains how it was edited: where the cuts are, what the transitions do, how the camera moves, and
@@ -18,6 +23,7 @@ video → motion analysis → timeline → event → timestamp → explanation �
 
 - [How it works](#how-it-works)
 - [The analysis pipeline](#the-analysis-pipeline)
+- [The story board and the editor workspace](#the-story-board-and-the-editor-workspace)
 - [Execution contexts, and why each exists](#execution-contexts-and-why-each-exists)
 - [What it can and cannot read](#what-it-can-and-cannot-read)
 - [Security model](#security-model)
@@ -47,39 +53,78 @@ video → motion analysis → timeline → event → timestamp → explanation �
 ## The analysis pipeline
 
 The central engineering claim: **the model is never used to find anything.** It is used to name what
-local measurement already found. A thirty-second video is roughly a thousand frames; this sends
-about thirty, and none of them chosen at random.
+local measurement already found. A thirty-second video is roughly a thousand frames; this measures a
+few hundred and shows the model a few dozen, none of them chosen at random.
 
 ```
 video
   ↓  metadata                    duration, dimensions; fps only when measurable
   ↓  frame-access probe          available | restricted   (restricted → offer upload)
-  ↓  coarse sampling             ~3 fps, downscaled to 64×36 grayscale
-  ↓  local measurement           pixel difference · 32-bin histogram χ² · luminance ·
-  ↓                              4-quadrant block motion (direction + divergence)
-  ↓  candidate detection         adaptive threshold, non-maximum suppression
-  ↓  fine sampling               ~12 fps around each candidate → sub-frame timestamps
-  ↓  evidence selection          before / during / after, tiered against a hard frame budget
-  ↓  AI interpretation           ONE call, strict json_schema, one repair turn
+  ↓  PASS A  coarse sweep        wide and cheap — locates activity, decides nothing
+  ↓  PASS B  densify             re-samples every active region at 8–18 fps
+  ↓  local measurement           pixel difference · luma histogram χ² · RGB histogram χ² ·
+  ↓                              edge density · hierarchical 4-quadrant block motion
+  ↓  candidate detection         adaptive threshold, bounded above and below
+  ↓  PASS C  fine sampling       16–30 fps per candidate → peak, velocity, span
+  ↓  clustering                  one primary event + the measurements it contains
+  ↓  scene segmentation          shot list → rhythm, motion profile   (local, no model)
+  ↓  MODEL 1  global context     idiom, cadence, transition habits    (8 thumbnails)
+  ↓  MODEL 2  event batches      4 events per call, 5-frame filmstrip each
+  ↓  MODEL 3  reconciliation     corrections, summary, DNA notes      (text only)
   ↓  validation + normalisation  clamped, canonicalised, anchored to measurements
   ↓  motion timeline
+  ↓  energy · story stages       turning points in the measured curve  (local)
+  ↓  editor toolkit              edit map · cut map · pacing · checklist (local)
+  ↓  MODEL 4  blueprint          camera, lenses, lighting, colour, shot list
+  ↓                              — judgement over facts already established
+  ↓  story board + editor workspace
 ```
 
-Two rules run through the whole thing:
+Three properties do most of the work:
 
-**Timestamps come from measurement, never from the model.** The schema in
-[`src/services/motion-schema.ts`](src/services/motion-schema.ts) does not contain a time field. The
-model is asked which *candidate* an observation belongs to; the normalizer supplies the time.
+**Sampling adapts.** One fixed rate meant a 400ms whip pan produced one or two elevated samples and a
+60ms flash produced none — and nothing downstream can recover an event that was never sampled. The
+coarse pass now only decides *where to look harder*.
 
-**Confidence cannot exceed the evidence.** A candidate that barely cleared the detection threshold
-caps how sure the product is willing to sound about it, and anything below the bar is labelled
-*Likely* rather than stated. See [`src/analysis/normalizer.ts`](src/analysis/normalizer.ts).
+**Thresholds are bounded at both ends.** A purely adaptive threshold treats "normal for this video"
+as the baseline, which inverts when a large minority of intervals *contain cuts*: the deviation
+inflates and a fast edit hides its own cutting. An absolute ceiling fixes that end, a floor fixes the
+other where a quiet video's threshold collapses onto its own noise.
 
-Editing DNA is derived from the event list by documented formulas
-([`src/analysis/editing-dna.ts`](src/analysis/editing-dna.ts)) — never asked for. A model asked to
-rate "pacing" out of ten will answer, and the answer will mean nothing.
+**Timestamps come from measurement, never from the model.** No schema in
+[`src/services/motion-schema.ts`](src/services/motion-schema.ts) contains a time field. The model is
+asked which measured *event* an observation belongs to; the normalizer supplies the time.
 
----
+Two further rules follow from that last one. **Confidence cannot exceed the evidence** — a candidate
+that barely cleared threshold caps how sure the product will sound, and events below the bar are
+labelled *Likely* or *Possible* rather than stated. And **a model failure never costs a timeline**: a
+failed batch leaves those events with their measured timestamps and a locally derived title, and a
+total failure yields a local-only analysis that says so on screen.
+
+Editing DNA, shot statistics, motion profile and edit rhythm are all arithmetic over the scene list
+([`src/analysis/rhythm.ts`](src/analysis/rhythm.ts), [`editing-dna.ts`](src/analysis/editing-dna.ts))
+— never asked for. A model asked to rate "pacing" out of ten will answer, and the answer will mean
+nothing. Each bar carries the sentence that produced it, one tap away.
+
+## The story board and the editor workspace
+
+Past the timeline, the analysis becomes two working surfaces.
+
+**Story** segments the video where its measured energy curve actually turns — not into a
+hook/build/peak template. Each stage carries the frame captured *for that stage*, stored in the
+frame store under the analysis id, and the board shows either that frame, a nearby one **labelled
+with how far off it is**, or a stated reason there is none. It never silently substitutes a frame
+from a different shot. Two layouts: **Flow** for reading, **Contact sheet** for scanning. Both copy
+to Markdown, and the export carries the measured/interpreted split and the unavailable sections with
+it.
+
+**Edit** answers "if I get footage tomorrow, how do I build this": edit map, cut map, pacing,
+transition recipes, footage checklist, workflow, speed-ramp phases, typography, colourist notes,
+suggested sound, priorities and mistakes. Everything time-based jumps to the source when a live
+video is bound — and when one is not, the control is absent rather than present and failing.
+
+Sections the blueprint could not produce are named, with the reason, in **Analysis coverage** on the
+Overview. They used to be recorded only where a failed blueprint made them unreachable.
 
 ## Execution contexts, and why each exists
 
@@ -191,16 +236,22 @@ motion-inspector/
 │   ├── build-manifest.mjs      # + the credential leak guard
 │   └── generate-icons.mjs      # PNGs rendered from geometry — no binary assets in git
 └── src/
-    ├── analysis/               # config · metrics · candidates · editing-dna · normalizer
+    ├── analysis/               # config · metrics · candidates · normalizer · claims ·
+    │                           #   scenes · rhythm · continuity · energy · story ·
+    │                           #   coverage · readiness · palette · editor-toolkit ·
+    │                           #   editing-dna
     ├── background/             # service-worker · orchestrator · session-registry ·
     │                           #   samplers · offscreen-host · tab-videos
     ├── content/                # index · video-registry · frame-access · capture
     ├── offscreen/              # main · video-source · diff.worker
     ├── services/               # motion-schema · prompts · validate-motion ·
-    │                           #   permissions · transport/
+    │                           #   blueprint-schema · blueprint-prompts ·
+    │                           #   validate-blueprint · permissions · transport/
     ├── sidepanel/              # SidePanel · AnalyzeScreen · HistoryScreen · SettingsPanel
-    │   └── motion/             # VideoCard · UploadDrop · Overview · EventList ·
-    │                           #   EventDetail · RecreatePanel · timeline/
+    │   ├── motion/             # VideoCard · UploadDrop · Overview · EventList ·
+    │   │                       #   EventDetail · RecreatePanel · timeline/
+    │   └── blueprint/          # StoryView (board) · CreateView · EditView ·
+    │                           #   Readiness · story-frames · story-markdown
     ├── storage/                # settings (sync) · credentials (local) · history · frame-store
     ├── types/                  # motion · video · analysis · messages · domain
     └── utils/                  # errors · time · schedule · port-rpc · id · logger
@@ -256,13 +307,23 @@ you ask for it.
 npm run verify
 ```
 
-84 unit tests over the parts where correctness is checkable without a browser: frame measurement,
-candidate detection, refinement, normalisation, Editing DNA derivation, model-output validation,
-timeline label layout, timecode formatting, and the settings whitelist.
+269 unit and component tests over the parts where correctness is checkable without a browser: frame
+measurement, motion estimation, candidate detection, threshold bounding, gradual-transition
+detection, clustering, refinement, scene segmentation, rhythm derivation, normalisation and
+degradation, Editing DNA, model-output validation across all four passes, blueprint validation,
+coverage derivation, stage-frame resolution, board export, cross-frame video ordering, SPA route
+keying, history migration, timeline label layout, timecode formatting, and the settings whitelist.
 
-Two of them exist because they caught real bugs during development — a block matcher that answered
-with a confident motion vector for a region carrying no motion information, and a timeline label
-layout that silently overlapped at narrow widths.
+Component tests render the real components into jsdom with `react-dom/client` — no testing-library
+dependency was added, because the assertions worth making here are about text and structure.
+
+There is **no browser end-to-end suite.** Video detection against real sites, canvas tainting and
+scrub behaviour are all unverified by automation and are checked by hand.
+
+Several exist because they caught real bugs during development: a block matcher that answered with a
+confident motion vector for a region carrying no motion information, a timecode formatter that
+rendered a 2.40s event as 00:02.39, an adaptive threshold that hid cuts in densely cut edits, and a
+timeline label layout that silently overlapped at narrow widths.
 
 ---
 

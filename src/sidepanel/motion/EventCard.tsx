@@ -1,5 +1,5 @@
-import { CATEGORY_LABELS, type MotionEvent } from '../../types/motion.ts';
-import { formatPreciseTime } from '../../utils/time.ts';
+import { CATEGORY_LABELS, DIRECTION_LABELS, type MotionEvent } from '../../types/motion.ts';
+import { formatDuration, formatPreciseTime } from '../../utils/time.ts';
 import { ChevronIcon, PlayIcon } from '../../components/Icons.tsx';
 
 /**
@@ -34,13 +34,11 @@ export function EventCard({
           className="w-full rounded-md px-2.5 py-2 text-left hover:bg-[var(--mi-hover)]"
         >
           <span className="flex items-center gap-1.5">
-            <span className="tabular text-2xs font-medium text-accent">{formatPreciseTime(event.startTime)}</span>
+            <span className="tabular text-2xs font-medium text-accent">
+              {formatPreciseTime(event.startTime)}
+              {event.endTime !== undefined ? ` → ${formatPreciseTime(event.endTime)}` : ''}
+            </span>
             <span className="text-2xs text-ink-subtle">{CATEGORY_LABELS[event.category]}</span>
-            {event.certainty === 'likely' ? (
-              <span className="text-2xs text-ink-subtle" title="Inferred from weaker evidence">
-                · inferred
-              </span>
-            ) : null}
             <span className="ml-auto tabular text-2xs text-ink-subtle">{Math.round(event.confidence * 100)}%</span>
             <ChevronIcon size={11} className="shrink-0 text-ink-subtle" />
           </span>
@@ -48,9 +46,15 @@ export function EventCard({
           <span className="mt-1 block text-sm font-medium leading-snug text-ink">{event.title}</span>
           <span className="mt-0.5 line-clamp-2 block text-xs leading-relaxed text-ink-muted">{event.description}</span>
 
-          {event.effects?.length ? (
-            <span className="mt-1.5 block truncate text-2xs text-ink-subtle">{event.effects.join(' · ')}</span>
-          ) : null}
+          {/* The scan line: direction, duration, treatments. Everything a
+              creator needs to decide whether to open this one. */}
+          <span className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs text-ink-subtle">
+            {event.direction ? <span className="text-ink-muted">{DIRECTION_LABELS[event.direction]}</span> : null}
+            {event.endTime !== undefined ? (
+              <span className="tabular">~{formatDuration(event.endTime - event.startTime)}</span>
+            ) : null}
+            {event.effects?.length ? <span className="truncate">{event.effects.join(' · ')}</span> : null}
+          </span>
         </button>
 
         <div className="border-t border-line px-2.5 py-1">

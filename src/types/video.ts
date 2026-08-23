@@ -57,6 +57,13 @@ export interface DetectedVideo {
   poster?: string;
   siteId: string;
   siteLabel: string;
+  /** How strongly this looks like the video the user is watching. */
+  activeScore?: number;
+  /**
+   * Set only when one video clearly leads. A near-tie leaves every entry false,
+   * so the panel asks rather than choosing for the user.
+   */
+  likelyActive?: boolean;
 }
 
 /** A video the user picked from disk. Decoded in the offscreen document. */

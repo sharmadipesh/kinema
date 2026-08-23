@@ -1,6 +1,7 @@
 import { CheckIcon, SpinnerIcon } from '../../components/Icons.tsx';
 import { Button } from '../../components/ui/Button.tsx';
 import { PROGRESS_STAGES, STAGE_LABELS, type AnalysisSession } from '../../types/motion.ts';
+import { formatElapsed, type AnalysisHealth } from '../../hooks/useAnalysisHealth.ts';
 
 /**
  * Real stages, not a fake percentage.
@@ -10,13 +11,60 @@ import { PROGRESS_STAGES, STAGE_LABELS, type AnalysisSession } from '../../types
  * duration genuinely is not knowable in advance, and pretending otherwise is
  * the specific dishonesty this component exists to avoid.
  */
-export function AnalysisProgress({ session, onCancel }: { session: AnalysisSession; onCancel(): void }) {
+export function AnalysisProgress({
+  session,
+  health,
+  onCancel,
+  onRetryStage,
+}: {
+  session: AnalysisSession;
+  health: AnalysisHealth;
+  onCancel(): void;
+  onRetryStage(): void;
+}) {
   const currentIndex = PROGRESS_STAGES.indexOf(session.status as (typeof PROGRESS_STAGES)[number]);
+  const done = session.completedStages.length;
 
   return (
     <section aria-label="Analysis progress" aria-live="polite">
-      <h2 className="text-sm font-medium text-ink">Analysing video</h2>
+      <div className="flex items-baseline justify-between gap-2">
+        <h2 className="text-sm font-medium text-ink">Analysing video</h2>
+        {/* Elapsed only. A "time remaining" would have to be invented: the
+            pipeline's cost depends on how many candidates the video turns out
+            to contain, which is not known until it contains them. */}
+        <span className="tabular shrink-0 text-2xs text-ink-subtle">{formatElapsed(health.elapsedMs)} elapsed</span>
+      </div>
       <p className="mt-0.5 truncate text-xs text-ink-subtle">{session.label}</p>
+      {done > 0 ? (
+        <p className="tabular mt-0.5 text-2xs text-ink-subtle">
+          {done} of {PROGRESS_STAGES.length} stages complete
+        </p>
+      ) : null}
+
+      {health.state === 'stalled' ? (
+        <div className="mt-2.5 rounded-md border border-line bg-surface-raised p-2.5" role="status">
+          <p className="text-sm font-medium text-ink">Analysis paused unexpectedly</p>
+          <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+            KINEMA has not heard from the analysis process for a while. This usually means Chrome suspended the
+            extension in the background.
+            {session.resumable ? ' Your completed local analysis is safe.' : ''}
+          </p>
+          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+            {session.resumable ? (
+              <Button variant="primary" size="sm" onClick={onRetryStage}>
+                Resume analysis
+              </Button>
+            ) : null}
+            <Button variant="secondary" size="sm" onClick={onCancel}>
+              Stop
+            </Button>
+          </div>
+        </div>
+      ) : health.state === 'slow' ? (
+        <p className="mt-2 rounded-sm bg-surface-sunken px-2 py-1.5 text-2xs leading-relaxed text-ink-muted">
+          Still analysing. This stage is taking longer than usual — complex sequences mean more frames to inspect.
+        </p>
+      ) : null}
 
       <ol className="mt-3 space-y-1.5">
         {PROGRESS_STAGES.map((stage, index) => {
@@ -45,10 +93,13 @@ export function AnalysisProgress({ session, onCancel }: { session: AnalysisSessi
         })}
       </ol>
 
-      <div className="mt-3.5">
+      <div className="mt-3.5 flex items-center gap-1.5">
         <Button variant="secondary" size="sm" onClick={onCancel}>
           Cancel analysis
         </Button>
+        {session.retries > 0 ? (
+          <span className="text-2xs text-ink-subtle">retry {session.retries}</span>
+        ) : null}
       </div>
     </section>
   );

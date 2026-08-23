@@ -1,5 +1,4 @@
 import { VIDEO } from '../config.ts';
-import { toGrayscale } from '../analysis/metrics.ts';
 import type { AnalysisFrameSize } from '../types/analysis.ts';
 import { localError } from '../utils/errors.ts';
 import { log } from '../utils/logger.ts';
@@ -16,7 +15,8 @@ import { log } from '../utils/logger.ts';
 
 interface DecodedFrame {
   time: number;
-  gray: Uint8Array;
+  /** RGBA at analysis resolution; colour metrics are derived downstream. */
+  rgba: Uint8Array;
   width: number;
   height: number;
 }
@@ -167,7 +167,7 @@ export class OffscreenVideoSource {
         const time = await this.seek(timestamp);
         context.drawImage(video, 0, 0, size.width, size.height);
         const { data } = context.getImageData(0, 0, size.width, size.height);
-        frames.push({ time, gray: toGrayscale(data, size.width, size.height), width: size.width, height: size.height });
+        frames.push({ time, rgba: new Uint8Array(data.buffer.slice(0)), width: size.width, height: size.height });
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') throw error;
         failures += 1;

@@ -26,16 +26,28 @@ export interface FrameSampler {
   /** True when sampling visibly moves a video the user is watching. */
   readonly disturbsPlayback: boolean;
   metadata(): Promise<VideoMetadata>;
+  /** Pass A: a wide, cheap sweep to locate activity. */
   sampleCoarse(timestamps: number[], size: AnalysisFrameSize): Promise<FrameMetrics[]>;
+  /** Pass B: densifies the regions the coarse pass found busy. */
+  sampleMedium(timestamps: number[], size: AnalysisFrameSize): Promise<FrameMetrics[]>;
+  /** Pass C: resolves peak and velocity around one candidate. */
   sampleFine(timestamps: number[], size: AnalysisFrameSize): Promise<FrameMetrics[]>;
   captureEvidence(times: Array<{ id: string; time: number }>): Promise<Array<{ id: string; time: number; dataUrl: string }>>;
   thumbnail(time: number): Promise<string | null>;
+  /** RGB bins counted while sampling. Empty when nothing was sampled. */
+  paletteBins(): number[];
+  /**
+   * Opens a scrub session for the whole run, so intermediate passes stop
+   * restoring the playhead between every sampling call.
+   */
+  beginSession(): Promise<void>;
   release(): Promise<void>;
 }
 
 /** A video playing in a tab. Frames come from the live element. */
 class PageSampler implements FrameSampler {
   readonly disturbsPlayback = true;
+  private bins: number[] = [];
 
   constructor(
     readonly id: string,
@@ -61,10 +73,26 @@ class PageSampler implements FrameSampler {
       size,
       runId: this.runId,
     });
+    this.mergeBins(reply.palette);
     return reply.metrics;
   }
 
+  paletteBins(): number[] {
+    return this.bins;
+  }
+
+  /** Summed across passes, so the palette reflects the whole video. */
+  private mergeBins(bins: number[] | undefined): void {
+    if (!bins?.length) return;
+    if (this.bins.length === 0) this.bins = [...bins];
+    else for (const [index, count] of bins.entries()) this.bins[index] = (this.bins[index] ?? 0) + count;
+  }
+
   sampleCoarse(timestamps: number[], size: AnalysisFrameSize): Promise<FrameMetrics[]> {
+    return this.sample(timestamps, size);
+  }
+
+  sampleMedium(timestamps: number[], size: AnalysisFrameSize): Promise<FrameMetrics[]> {
     return this.sample(timestamps, size);
   }
 
@@ -88,14 +116,19 @@ class PageSampler implements FrameSampler {
     return frames[0]?.dataUrl ?? null;
   }
 
+  async beginSession(): Promise<void> {
+    await commandVideo(this.id, { type: 'content:begin-scrub', videoId: this.id }).catch(() => undefined);
+  }
+
   async release(): Promise<void> {
-    await commandVideo(this.id, { type: 'content:restore', videoId: this.id }).catch(() => undefined);
+    await commandVideo(this.id, { type: 'content:end-scrub', videoId: this.id }).catch(() => undefined);
   }
 }
 
 /** A file the user chose. Decoded in the offscreen document. */
 class UploadSampler implements FrameSampler {
   readonly disturbsPlayback = false;
+  private bins: number[] = [];
   private loaded: { duration: number; width: number; height: number } | null = null;
 
   constructor(
@@ -129,10 +162,25 @@ class UploadSampler implements FrameSampler {
       timestamps,
       size,
     });
+    this.mergeBins(response.palette);
     return response.metrics;
   }
 
+  paletteBins(): number[] {
+    return this.bins;
+  }
+
+  private mergeBins(bins: number[] | undefined): void {
+    if (!bins?.length) return;
+    if (this.bins.length === 0) this.bins = [...bins];
+    else for (const [index, count] of bins.entries()) this.bins[index] = (this.bins[index] ?? 0) + count;
+  }
+
   sampleCoarse(timestamps: number[], size: AnalysisFrameSize): Promise<FrameMetrics[]> {
+    return this.sample(timestamps, size);
+  }
+
+  sampleMedium(timestamps: number[], size: AnalysisFrameSize): Promise<FrameMetrics[]> {
     return this.sample(timestamps, size);
   }
 
@@ -156,6 +204,11 @@ class UploadSampler implements FrameSampler {
       maxWidth: 160,
     });
     return response.dataUrl;
+  }
+
+  /** Nothing to defer: this element is off-screen and nobody is watching it. */
+  async beginSession(): Promise<void> {
+    return Promise.resolve();
   }
 
   async release(): Promise<void> {

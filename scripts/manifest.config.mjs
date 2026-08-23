@@ -8,7 +8,10 @@
 export function createManifest({ version }) {
   return {
     manifest_version: 3,
-    name: 'Motion Inspector — understand how any video moves',
+    // Keep in step with `APP_NAME` in src/config.ts, which drives every
+    // in-panel surface. The manifest cannot import it, so this is the one
+    // deliberate duplicate.
+    name: 'KINEMA — understand how any video moves',
     version,
     description:
       'Inspect the motion, cuts, transitions and effects in any browser-accessible video, on a timeline you can jump through.',
@@ -26,7 +29,7 @@ export function createManifest({ version }) {
     // behaviour are mutually exclusive — with a popup declared, the click never
     // reaches the panel and the panel would simply never open.
     action: {
-      default_title: 'Motion Inspector',
+      default_title: 'KINEMA',
       default_icon: { 16: 'icons/icon-16.png', 32: 'icons/icon-32.png', 48: 'icons/icon-48.png' },
     },
 

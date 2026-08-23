@@ -1,4 +1,5 @@
 import { CONTEXT } from '../config.ts';
+import { accumulatePalette } from '../analysis/metrics.ts';
 import { EVIDENCE } from '../analysis/config.ts';
 import type { FrameMetrics } from '../types/analysis.ts';
 import type { OffscreenRequest, OffscreenResponse } from '../types/messages.ts';
@@ -31,31 +32,72 @@ let currentRun: AbortController | null = null;
 
 const worker = new Worker(new URL('./diff.worker.ts', import.meta.url), { type: 'module' });
 let nextJob = 1;
-const jobs = new Map<number, (metrics: FrameMetrics[]) => void>();
+
+interface Job {
+  resolve(metrics: FrameMetrics[]): void;
+  reject(error: Error): void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const jobs = new Map<number, Job>();
+
+/**
+ * A worker job that never comes back used to hang three contexts at once.
+ *
+ * The job map previously held only a resolver — no rejection path, no timeout,
+ * and no `onerror`. A malformed transfer or an out-of-memory kill in the worker
+ * left the offscreen document awaiting forever, which left the service worker
+ * awaiting forever, which left the panel spinning on a stage that had already
+ * died. One silent failure, three stuck contexts, and nothing in the UI to
+ * suggest anything was wrong.
+ */
+const WORKER_TIMEOUT_MS = 90_000;
+
+function settle(id: number, apply: (job: Job) => void): void {
+  const job = jobs.get(id);
+  if (!job) return;
+  jobs.delete(id);
+  clearTimeout(job.timer);
+  apply(job);
+}
+
+function failAllJobs(reason: string): void {
+  for (const id of [...jobs.keys()]) settle(id, (job) => job.reject(new Error(reason)));
+}
 
 worker.onmessage = (event: MessageEvent<{ id: number; metrics: FrameMetrics[] }>): void => {
-  const resolve = jobs.get(event.data.id);
-  if (!resolve) return;
-  jobs.delete(event.data.id);
-  resolve(event.data.metrics);
+  settle(event.data.id, (job) => job.resolve(event.data.metrics));
+};
+
+worker.onerror = (event): void => {
+  log.error('metrics worker failed', { message: event.message });
+  failAllJobs('The frame analyser stopped responding.');
+};
+
+worker.onmessageerror = (): void => {
+  log.error('metrics worker sent an unreadable message');
+  failAllJobs('The frame analyser returned unreadable data.');
 };
 
 function measureInWorker(
-  frames: Array<{ time: number; gray: Uint8Array; width: number; height: number }>,
+  frames: Array<{ time: number; rgba: Uint8Array; width: number; height: number }>,
 ): Promise<FrameMetrics[]> {
   if (frames.length === 0) return Promise.resolve([]);
   const id = nextJob++;
-  return new Promise<FrameMetrics[]>((resolve) => {
-    jobs.set(id, resolve);
+  return new Promise<FrameMetrics[]>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      settle(id, () => reject(new Error('The frame analyser did not respond in time.')));
+    }, WORKER_TIMEOUT_MS);
+    jobs.set(id, { resolve, reject, timer });
     const payload = frames.map((frame) => ({
       time: frame.time,
       // Transferred, not copied: the offscreen document gives up ownership of
       // each buffer as it hands it over.
-      gray: frame.gray.buffer as ArrayBuffer,
+      rgba: frame.rgba.buffer as ArrayBuffer,
       width: frame.width,
       height: frame.height,
     }));
-    worker.postMessage({ id, samples: payload }, payload.map((frame) => frame.gray));
+    worker.postMessage({ id, samples: payload }, payload.map((frame) => frame.rgba));
   });
 }
 
@@ -79,7 +121,8 @@ function connect(): void {
       case 'offscreen:sample': {
         const signal = (currentRun ??= new AbortController()).signal;
         const frames = await source.sample(request.timestamps, request.size, signal);
-        return { for: 'offscreen:sample', metrics: await measureInWorker(frames) };
+        const palette = [...accumulatePalette(frames.map((frame) => ({ time: frame.time, rgba: frame.rgba, width: frame.width, height: frame.height })))];
+        return { for: 'offscreen:sample', metrics: await measureInWorker(frames), palette };
       }
 
       case 'offscreen:capture': {

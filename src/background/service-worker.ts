@@ -3,11 +3,11 @@ import { readHistory } from '../storage/history.ts';
 import { generateRecreateGuide } from '../services/transport/openai-transport.ts';
 import type { ContentEvent, DetectionReport, PanelEvent, PanelRequest, PanelResponse } from '../types/messages.ts';
 import type { ContentReply } from '../types/messages.ts';
-import type { AnalysisSession } from '../types/motion.ts';
 import { isFriendlyError, localError, unknownError } from '../utils/errors.ts';
 import { createId } from '../utils/id.ts';
 import { log } from '../utils/logger.ts';
 import { serveRpc } from '../utils/port-rpc.ts';
+import { clearAllArtifacts } from './artifacts.ts';
 import { registerOffscreenPort, abortOffscreen, closeOffscreen } from './offscreen-host.ts';
 import { runAnalysis } from './orchestrator.ts';
 import {
@@ -16,7 +16,11 @@ import {
   cancelActive,
   clearAnalysis,
   getState,
+  failSession,
   hydrate,
+  isTerminal,
+  newSession,
+  restartSession,
   onStateChanged,
   setUpload,
   startSession,
@@ -25,6 +29,7 @@ import {
   activeTab,
   commandVideo,
   ensureInjected,
+  findVideo,
   forgetTab,
   forgetVideo,
   getReport,
@@ -153,15 +158,12 @@ async function handlePanelRequest(request: PanelRequest): Promise<PanelResponse>
       return { for: 'panel:register-upload' };
 
     case 'panel:start-analysis': {
-      const session: AnalysisSession = {
+      const session = newSession({
         id: createId('session'),
         videoId: request.source.kind === 'page' ? request.source.videoId : request.source.uploadId,
         sourceKind: request.source.kind,
         label: request.source.label,
-        startedAt: Date.now(),
-        status: 'preparing',
-        completedStages: [],
-      };
+      });
       const signal = startSession(session, request.source);
       // Deliberately not awaited: the panel gets its session id immediately and
       // watches the run through pushed stage events.
@@ -187,8 +189,35 @@ async function handlePanelRequest(request: PanelRequest): Promise<PanelResponse>
       return { for: 'panel:cancel-analysis', cancelled };
     }
 
+    case 'panel:retry-stage': {
+      /**
+       * Retry the model work, keep the local work.
+       *
+       * The whole point of storing artifacts: a rate-limited or timed-out
+       * interpretation should cost one call, not a second full scrub of
+       * somebody's video. Falls through to a normal run when the artifacts have
+       * expired or the analysis version moved on.
+       */
+      const state = getState();
+      if (!state.session || state.session.id !== request.sessionId || !state.source) {
+        return { for: 'panel:retry-stage', started: false };
+      }
+      const signal = restartSession(request.sessionId);
+      if (!signal) return { for: 'panel:retry-stage', started: false };
+
+      void runAnalysis({
+        sessionId: request.sessionId,
+        source: state.source,
+        label: state.session.label,
+        signal,
+        resumeFromArtifacts: request.stage === 'interpretation',
+      });
+      return { for: 'panel:retry-stage', started: true };
+    }
+
     case 'panel:clear-analysis':
       clearAnalysis();
+      void clearAllArtifacts();
       return { for: 'panel:clear-analysis' };
 
     case 'panel:seek': {
@@ -292,10 +321,31 @@ chrome.runtime.onMessage.addListener((message: ContentEvent, sender) => {
         paused: message.paused,
       });
       break;
-    case 'content-event:gone':
+    case 'content-event:gone': {
       forgetVideo(tabId, message.videoId);
       broadcast({ type: 'event:video-gone', videoId: message.videoId });
+
+      /**
+       * If the analysis was bound to this video, it cannot continue — and it
+       * must never quietly continue against a different one. Failing loudly
+       * here is the difference between "the page changed" and an analysis whose
+       * timestamps silently describe footage nobody asked about.
+       */
+      const state = getState();
+      const session = state.session;
+      if (
+        session &&
+        session.sourceKind === 'page' &&
+        session.videoId === message.videoId &&
+        !isTerminal(session.status)
+      ) {
+        log.warn('analysed video disappeared mid-run', { videoId: message.videoId });
+        cancelActive(session.id);
+        abortOffscreen();
+        failSession(session.id, localError('VIDEO_REPLACED'));
+      }
       break;
+    }
   }
   return undefined;
 });
@@ -305,9 +355,37 @@ chrome.runtime.onMessage.addListener((message: ContentEvent, sender) => {
 chrome.tabs.onRemoved.addListener((tabId) => forgetTab(tabId));
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  // A navigation replaces the document, so every video id from the old one is
-  // stale. Keeping them would let a seek land in a page that no longer exists.
-  if (changeInfo.status === 'loading' && changeInfo.url) forgetTab(tabId);
+  /**
+   * A document-replacing navigation invalidates every video id from the old
+   * one. Keeping them would let a seek land in a page that no longer exists,
+   * and `commandVideo` would sit on it for the full three-minute tab timeout.
+   *
+   * Keyed on `status` alone. Requiring `url` as well missed the plain case —
+   * a reload of the same address carries no `url` — while an in-page route
+   * change carries `url` with no `status`, and that one must *not* clear the
+   * tab: the content script is still alive there and re-announces itself.
+   */
+  if (changeInfo.status !== 'loading') return;
+
+  /**
+   * A session bound to this tab cannot survive the document that owns its
+   * video. Nothing else reports this: the content script is destroyed without
+   * getting to send `content-event:gone`, so without this the run would hang
+   * on a video id that can no longer resolve.
+   */
+  const state = getState();
+  const session = state.session;
+  if (session && session.sourceKind === 'page' && !isTerminal(session.status)) {
+    const located = findVideo(session.videoId);
+    if (located?.tabId === tabId) {
+      log.warn('analysed tab navigated away mid-run', { tabId, videoId: session.videoId });
+      cancelActive(session.id);
+      abortOffscreen();
+      failSession(session.id, localError('VIDEO_REPLACED'));
+    }
+  }
+
+  forgetTab(tabId);
 });
 
 chrome.runtime.onSuspend.addListener(() => {

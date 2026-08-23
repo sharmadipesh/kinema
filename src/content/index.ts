@@ -4,9 +4,17 @@ import type { ContentCommand, ContentEvent, ContentReply, Result } from '../type
 import { isFriendlyError, localError, unknownError } from '../utils/errors.ts';
 import { log } from '../utils/logger.ts';
 import { debounce, rateLimit } from '../utils/schedule.ts';
-import { captureFrames, restorePlaybackState, sampleMetrics, seekTo } from './capture.ts';
+import {
+  beginScrubSession,
+  captureFrames,
+  endScrubSession,
+  restorePlaybackState,
+  sampleMetrics,
+  seekTo,
+} from './capture.ts';
 import { probeFrameAccess } from './frame-access.ts';
-import { snapshot } from './video-registry.ts';
+import { hasNavigated, routeKeyOf } from './navigation.ts';
+import { snapshot, watchElement } from './video-registry.ts';
 
 /**
  * Content script.
@@ -50,13 +58,34 @@ function bootstrap(): void {
 
   /** Latest element map. Rebuilt on every scan; ids are stable across rebuilds. */
   let elements = new Map<string, HTMLVideoElement>();
+  /** Ids from the previous scan, so a disappearance can be reported rather than inferred. */
+  let knownIds = new Set<string>();
   /** Per-run abort, so a cancelled analysis stops seeking immediately. */
   const runs = new Map<string, AbortController>();
   let syncing: { videoId: string; video: HTMLVideoElement; stop(): void } | null = null;
 
   function scanAndReport(probe: boolean): ContentReply & { for: 'content:detect' } {
-    const result = snapshot({ probe });
+    /**
+     * Every element gets lifecycle listeners, including ones seen before —
+     * `watchElement` is idempotent via a WeakSet. This is what makes an
+     * in-place source swap observable at all: a feed that recycles one
+     * `<video>` fires no DOM mutation, so without these the registry would go
+     * on serving the previous clip's identity indefinitely.
+     */
+    const result = snapshot({ probe, onElement: (video) => watchElement(video, onVideoChanged) });
     elements = result.elements;
+
+    /**
+     * A video that has left the page is reported, not merely forgotten. The
+     * panel needs to know so an analysis bound to it can say so, instead of
+     * discovering the loss later when a seek fails.
+     */
+    const currentIds = new Set(result.videos.map((video) => video.id));
+    for (const id of knownIds) {
+      if (!currentIds.has(id)) push({ type: 'content-event:gone', videoId: id });
+    }
+    knownIds = currentIds;
+
     return { for: 'content:detect', videos: result.videos, siteLabel: result.siteLabel, pageUrl: location.href };
   }
 
@@ -99,8 +128,19 @@ function bootstrap(): void {
    */
   const announceSoon = debounce(announce, 400);
 
+  /**
+   * Coalesced: a single source swap fires loadstart, emptied, durationchange
+   * and loadedmetadata in quick succession, and each would otherwise trigger
+   * its own full scan.
+   */
+  const onVideoChanged = (): void => announceSoon();
+
   const observer = new MutationObserver((records) => {
     for (const record of records) {
+      if (record.type === 'attributes' && record.target instanceof HTMLVideoElement) {
+        announceSoon();
+        return;
+      }
       for (const node of record.addedNodes) {
         if (node instanceof HTMLElement && (node.tagName === 'VIDEO' || node.querySelector?.('video'))) {
           announceSoon();
@@ -115,7 +155,20 @@ function bootstrap(): void {
       }
     }
   });
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  /**
+   * `src` is watched as well as the tree.
+   *
+   * Covers pages that swap a plain progressive source in place. It does not
+   * cover Media Source playback, where `currentSrc` is a blob URL that changes
+   * with no attribute mutation at all — the element listeners in
+   * `watchElement` are what catch that, and they are the load-bearing half.
+   */
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['src'],
+  });
 
   /**
    * Single-page navigation. History methods are patched to emit an event so the
@@ -125,6 +178,7 @@ function bootstrap(): void {
   const emitNavigation = (): void => {
     window.dispatchEvent(new Event('mi:navigation'));
   };
+  const routeKey = (): string => routeKeyOf(location);
   const originalPushState = history.pushState.bind(history);
   const originalReplaceState = history.replaceState.bind(history);
   history.pushState = function patched(...args: Parameters<History['pushState']>) {
@@ -137,10 +191,11 @@ function bootstrap(): void {
   };
   window.addEventListener('popstate', emitNavigation);
 
-  let lastPath = location.pathname;
+  let lastRoute = routeKey();
   const onNavigation = debounce(() => {
-    if (location.pathname === lastPath) return;
-    lastPath = location.pathname;
+    const next = routeKey();
+    if (!hasNavigated(lastRoute, next)) return;
+    lastRoute = next;
     stopSync();
     announce();
   }, 250);
@@ -229,8 +284,8 @@ function bootstrap(): void {
         const controller = new AbortController();
         runs.set(command.runId, controller);
         try {
-          const metrics = await sampleMetrics(require(command.videoId), command.timestamps, command.size, controller.signal);
-          return { for: 'content:sample', metrics };
+          const sampled = await sampleMetrics(require(command.videoId), command.timestamps, command.size, controller.signal);
+          return { for: 'content:sample', metrics: sampled.metrics, palette: sampled.palette };
         } finally {
           runs.delete(command.runId);
         }
@@ -251,6 +306,19 @@ function bootstrap(): void {
         } finally {
           runs.delete(command.runId);
         }
+      }
+
+      case 'content:begin-scrub':
+        beginScrubSession(require(command.videoId));
+        return { for: 'content:begin-scrub' };
+
+      case 'content:end-scrub': {
+        // Best effort: the element may already be gone if the page navigated
+        // mid-run, and failing to restore a video that no longer exists is not
+        // a failure worth surfacing.
+        const video = elements.get(command.videoId);
+        if (video?.isConnected) await endScrubSession(video);
+        return { for: 'content:end-scrub' };
       }
 
       case 'content:restore': {

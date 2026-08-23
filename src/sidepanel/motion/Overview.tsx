@@ -35,13 +35,17 @@ export function Overview({ analysis }: { analysis: MotionAnalysis }) {
       </dl>
 
       <div>
-        <h3 className="mb-1 text-2xs font-semibold uppercase tracking-wide text-ink-subtle">Editing DNA</h3>
+        <h3 className="mb-1 text-2xs font-semibold uppercase tracking-wide text-ink-subtle">
+          Editing DNA
+          <span className="ml-1.5 font-normal normal-case tracking-normal text-ink-subtle/70">tap a row for why</span>
+        </h3>
         {DNA_TRAITS.map((trait) => (
           <Meter
             key={trait}
             label={TRAIT_LABELS[trait]}
             value={editingDNA[trait].value}
             caption={editingDNA[trait].label}
+            {...(editingDNA[trait].why ? { why: editingDNA[trait].why } : {})}
           />
         ))}
       </div>
@@ -53,8 +57,9 @@ export function Overview({ analysis }: { analysis: MotionAnalysis }) {
         of what they are reading.
       */}
       <p className="text-2xs leading-relaxed text-ink-subtle">
-        {stats.coarseFrames} frames sampled across {formatClock(video.duration)} · {stats.candidates} moments examined ·{' '}
-        {stats.framesSentToModel} frames interpreted
+        {stats.coarseFrames + stats.mediumFrames + stats.fineFrames} frames measured across{' '}
+        {formatClock(video.duration)} · {stats.clusters} moments examined · {stats.framesSentToModel} frames interpreted
+        {stats.modelCalls > 0 ? ` in ${stats.modelCalls} passes` : ''}
         {video.fps ? ` · ${video.fps.toFixed(1)} fps measured` : ''}
       </p>
     </section>

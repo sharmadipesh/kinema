@@ -18,7 +18,16 @@ import { log } from '../utils/logger.ts';
 const DB_NAME = 'motion-inspector';
 const DB_VERSION = 1;
 const STORE = 'evidence-frames';
-const MAX_ANALYSES = 12;
+/**
+ * Raised from 12 to match the history library more closely.
+ *
+ * At 12 against `STORAGE.maxHistoryItems` of 40, entries 13 and older were
+ * guaranteed to outlive their own frames, so a Story board reopened from
+ * History reliably lost its images. It still cannot be 40 — frames are the
+ * bulky half and IndexedDB is not free — so the Story board names an evicted
+ * frame rather than pretending, and this narrows the window in which it has to.
+ */
+const MAX_ANALYSES = 24;
 
 interface StoredFrame extends EvidenceFrame {
   analysisId: string;
@@ -90,7 +99,7 @@ export async function readFrames(analysisId: string): Promise<EvidenceFrame[]> {
     const rows = await promisify<StoredFrame[]>(index.getAll(analysisId) as IDBRequest<StoredFrame[]>);
     return rows
       .sort((a, b) => a.time - b.time)
-      .map(({ id, candidateId, role, time, dataUrl }) => ({ id, candidateId, role, time, dataUrl }));
+      .map(({ id, candidateId, role, order, time, dataUrl }) => ({ id, candidateId, role, order, time, dataUrl }));
   } catch (error) {
     log.warn('frame read failed', { error: String(error) });
     return [];

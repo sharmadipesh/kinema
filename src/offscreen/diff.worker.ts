@@ -16,7 +16,7 @@ import type { FrameMetrics } from '../types/analysis.ts';
 
 interface WorkerRequest {
   id: number;
-  samples: Array<{ time: number; gray: ArrayBuffer; width: number; height: number }>;
+  samples: Array<{ time: number; rgba: ArrayBuffer; width: number; height: number }>;
 }
 
 interface WorkerResponse {
@@ -28,7 +28,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>): void => {
   const { id, samples } = event.data;
   const frames: FrameSample[] = samples.map((sample) => ({
     time: sample.time,
-    gray: new Uint8Array(sample.gray),
+    rgba: new Uint8Array(sample.rgba),
     width: sample.width,
     height: sample.height,
   }));

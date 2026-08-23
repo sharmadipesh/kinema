@@ -1,3 +1,4 @@
+import { APP_NAME } from '../config.ts';
 import { Segmented } from '../components/ui/Segmented.tsx';
 import { clearFrames } from '../storage/frame-store.ts';
 import { clearHistory } from '../storage/history.ts';
@@ -15,7 +16,7 @@ export function SettingsPanel({
 }) {
   return (
     <div className="space-y-5 px-3.5 pb-5 pt-2">
-      <Section title="Connection" description="Motion Inspector uses your own OpenAI key. There is no server.">
+      <Section title="Connection" description={`${APP_NAME} uses your own OpenAI key. There is no server.`}>
         <ApiKeyField onChanged={onConnectionChange} />
       </Section>
 
@@ -71,7 +72,7 @@ export function SettingsPanel({
         </Field>
       </Section>
 
-      <Section title="Data" description="Everything Motion Inspector keeps lives on this device.">
+      <Section title="Data" description={`Everything ${APP_NAME} keeps lives on this device.`}>
         <div className="flex flex-wrap gap-1.5">
           <button
             type="button"

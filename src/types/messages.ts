@@ -34,6 +34,7 @@ export type PanelRequest =
   | { type: 'panel:register-upload'; upload: UploadedVideo }
   | { type: 'panel:start-analysis'; source: AnalysisSource }
   | { type: 'panel:cancel-analysis'; sessionId: string }
+  | { type: 'panel:retry-stage'; sessionId: string; stage: 'interpretation' }
   | { type: 'panel:clear-analysis' }
   | { type: 'panel:seek'; videoId: string; timestamp: number; play: boolean }
   | { type: 'panel:set-sync'; videoId: string; enabled: boolean }
@@ -56,6 +57,7 @@ export type PanelResponse =
   | { for: 'panel:register-upload' }
   | { for: 'panel:start-analysis'; session: AnalysisSession }
   | { for: 'panel:cancel-analysis'; cancelled: boolean }
+  | { for: 'panel:retry-stage'; started: boolean }
   | { for: 'panel:clear-analysis' }
   | { for: 'panel:seek'; outcome: SeekOutcome }
   | { for: 'panel:set-sync' }
@@ -89,6 +91,8 @@ export type ContentCommand =
   | { type: 'content:set-sync'; videoId: string; enabled: boolean }
   | { type: 'content:sample'; videoId: string; timestamps: number[]; size: AnalysisFrameSize; runId: string }
   | { type: 'content:capture'; videoId: string; times: Array<{ id: string; time: number }>; maxWidth: number; runId: string }
+  | { type: 'content:begin-scrub'; videoId: string }
+  | { type: 'content:end-scrub'; videoId: string }
   | { type: 'content:restore'; videoId: string }
   | { type: 'content:abort'; runId: string };
 
@@ -97,8 +101,10 @@ export type ContentReply =
   | { for: 'content:probe'; videoId: string; frameAccess: FrameAccess; reason?: FrameAccessReason }
   | { for: 'content:seek'; outcome: SeekOutcome }
   | { for: 'content:set-sync' }
-  | { for: 'content:sample'; metrics: FrameMetrics[] }
+  | { for: 'content:sample'; metrics: FrameMetrics[]; palette?: number[] }
   | { for: 'content:capture'; frames: Array<{ id: string; time: number; dataUrl: string }> }
+  | { for: 'content:begin-scrub' }
+  | { for: 'content:end-scrub' }
   | { for: 'content:restore' }
   | { for: 'content:abort' };
 
@@ -120,7 +126,7 @@ export type OffscreenRequest =
 
 export type OffscreenResponse =
   | { for: 'offscreen:load'; duration: number; width: number; height: number }
-  | { for: 'offscreen:sample'; metrics: FrameMetrics[] }
+  | { for: 'offscreen:sample'; metrics: FrameMetrics[]; palette?: number[] }
   | { for: 'offscreen:measure-fps'; fps: number | null }
   | { for: 'offscreen:capture'; frames: Array<{ id: string; time: number; dataUrl: string }> }
   | { for: 'offscreen:thumbnail'; dataUrl: string | null }
