@@ -28,8 +28,21 @@ interface Envelope {
 const isEnvelope = (value: unknown): value is Envelope =>
   Boolean(value) && typeof value === 'object' && (value as Envelope).__mi === true;
 
+export interface RpcOptions {
+  /**
+   * Safety net, not a scheduler.
+   *
+   * A port request settles on a reply or on disconnect and on nothing else, so
+   * a handler that hangs leaves the caller waiting forever while the port stays
+   * open and the heartbeat keeps it looking healthy. Generous values here catch
+   * a genuine hang without cutting off slow-but-working stages; the progress
+   * watchdog handles the user-facing side of "this is taking a while".
+   */
+  timeoutMs?: number;
+}
+
 export interface RpcClient<Req, Res, Evt> {
-  request<T extends Res>(payload: Req): Promise<T>;
+  request<T extends Res>(payload: Req, options?: RpcOptions): Promise<T>;
   onEvent(listener: (event: Evt) => void): () => void;
   onDisconnect(listener: () => void): () => void;
   disconnect(): void;
@@ -42,7 +55,10 @@ export function createRpcClient<Req, Res, Evt>(
 ): RpcClient<Req, Res, Evt> {
   let nextId = 1;
   let connected = true;
-  const pending = new Map<number, { resolve(value: never): void; reject(error: FriendlyError): void }>();
+  const pending = new Map<
+    number,
+    { resolve(value: never): void; reject(error: FriendlyError): void; timer: ReturnType<typeof setTimeout> | null }
+  >();
   const eventListeners = new Set<(event: Evt) => void>();
   const disconnectListeners = new Set<() => void>();
 
@@ -66,6 +82,7 @@ export function createRpcClient<Req, Res, Evt>(
     const entry = pending.get(raw.id);
     if (!entry) return;
     pending.delete(raw.id);
+    if (entry.timer) clearTimeout(entry.timer);
     if (raw.kind === 'err') entry.reject(raw.error ?? unknownError());
     else entry.resolve(raw.payload as never);
   });
@@ -78,7 +95,10 @@ export function createRpcClient<Req, Res, Evt>(
       message: 'The extension background stopped responding. Try again.',
       retryable: true,
     };
-    for (const [, entry] of pending) entry.reject(error);
+    for (const [, entry] of pending) {
+      if (entry.timer) clearTimeout(entry.timer);
+      entry.reject(error);
+    }
     pending.clear();
     for (const listener of disconnectListeners) listener();
   });
@@ -87,7 +107,7 @@ export function createRpcClient<Req, Res, Evt>(
     get connected() {
       return connected;
     },
-    request<T extends Res>(payload: Req): Promise<T> {
+    request<T extends Res>(payload: Req, options: RpcOptions = {}): Promise<T> {
       if (!connected) {
         return Promise.reject({
           code: 'PORT_CLOSED',
@@ -97,11 +117,24 @@ export function createRpcClient<Req, Res, Evt>(
       }
       const id = nextId++;
       return new Promise<T>((resolve, reject) => {
-        pending.set(id, { resolve: resolve as (value: never) => void, reject });
+        const timer = options.timeoutMs
+          ? setTimeout(() => {
+              pending.delete(id);
+              log.warn('port request timed out', { timeoutMs: options.timeoutMs });
+              reject({
+                code: 'STAGE_TIMEOUT',
+                message: 'That step stopped responding. Your completed analysis is preserved.',
+                retryable: true,
+              } satisfies FriendlyError);
+            }, options.timeoutMs)
+          : null;
+
+        pending.set(id, { resolve: resolve as (value: never) => void, reject, timer });
         try {
           port.postMessage({ __mi: true, id, kind: 'req', payload } satisfies Envelope);
         } catch (error) {
           pending.delete(id);
+          if (timer) clearTimeout(timer);
           log.warn('port send failed', { error: String(error) });
           reject(unknownError());
         }

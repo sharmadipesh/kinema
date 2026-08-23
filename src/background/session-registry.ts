@@ -1,6 +1,6 @@
 import { STORAGE } from '../config.ts';
 import type { FriendlyError } from '../types/domain.ts';
-import type { AnalysisSession, AnalysisStatus, MotionAnalysis } from '../types/motion.ts';
+import { ANALYSIS_VERSION, type AnalysisSession, type AnalysisStatus, type MotionAnalysis } from '../types/motion.ts';
 import type { AnalysisSource, UploadedVideo } from '../types/video.ts';
 import { log } from '../utils/logger.ts';
 
@@ -96,6 +96,37 @@ export function getUpload(): UploadedVideo | null {
   return upload;
 }
 
+/** Stamps the health fields every state change has to keep current. */
+function touch(session: AnalysisSession, patch: Partial<AnalysisSession> = {}): AnalysisSession {
+  const now = Date.now();
+  return {
+    ...session,
+    ...patch,
+    lastProgressAt: now,
+    ...(patch.status && patch.status !== session.status ? { stageStartedAt: now } : {}),
+  };
+}
+
+export function newSession(input: {
+  id: string;
+  videoId: string;
+  sourceKind: 'page' | 'upload';
+  label: string;
+}): AnalysisSession {
+  const now = Date.now();
+  return {
+    ...input,
+    startedAt: now,
+    status: 'preparing',
+    completedStages: [],
+    lastProgressAt: now,
+    stageStartedAt: now,
+    retries: 0,
+    resumable: false,
+    version: ANALYSIS_VERSION,
+  };
+}
+
 export function startSession(session: AnalysisSession, source: AnalysisSource): AbortSignal {
   controller?.abort(new DOMException('Superseded by a new analysis', 'AbortError'));
   controller = new AbortController();
@@ -117,12 +148,11 @@ export function advance(sessionId: string, status: AnalysisStatus, detail?: stri
 
   state = {
     ...state,
-    session: {
-      ...current,
+    session: touch(current, {
       status,
       ...(detail !== undefined ? { detail } : { detail: undefined }),
       completedStages: [...new Set(completedStages)],
-    },
+    }),
   };
   publish();
 }
@@ -132,7 +162,12 @@ export function completeSession(sessionId: string, analysis: MotionAnalysis): bo
   if (!current || current.id !== sessionId) return false;
   state = {
     ...state,
-    session: { ...current, status: 'completed', detail: undefined, completedStages: [...current.completedStages, current.status] },
+    session: touch(current, {
+      status: 'completed',
+      detail: undefined,
+      resumable: false,
+      completedStages: [...current.completedStages, current.status],
+    }),
     analysis,
     error: null,
   };
@@ -140,13 +175,48 @@ export function completeSession(sessionId: string, analysis: MotionAnalysis): bo
   return true;
 }
 
+/** Records that local artifacts survive, so the panel may offer a stage retry. */
+export function markResumable(sessionId: string, resumable: boolean): void {
+  const current = state.session;
+  if (!current || current.id !== sessionId) return;
+  state = { ...state, session: touch(current, { resumable }) };
+  publish();
+}
+
+/** A stage retry keeps the session id so artifacts stay addressable. */
+export function restartSession(sessionId: string): AbortSignal | null {
+  const current = state.session;
+  if (!current || current.id !== sessionId) return null;
+  controller?.abort(new DOMException('Superseded by a retry', 'AbortError'));
+  controller = new AbortController();
+  state = {
+    ...state,
+    session: touch(current, { status: 'preparing', detail: undefined, retries: current.retries + 1 }),
+    error: null,
+  };
+  publish();
+  return controller.signal;
+}
+
 export function failSession(sessionId: string, error: FriendlyError): boolean {
   const current = state.session;
   if (!current || current.id !== sessionId) return false;
+
+  /**
+   * The first terminal reason wins.
+   *
+   * When the analysed video disappears, the handler aborts the run and records
+   * VIDEO_REPLACED — and the orchestrator's own catch then arrives with the
+   * resulting AbortError. Without this guard that second call rewrites the
+   * state to "cancelled", and the user is told they cancelled something they did
+   * not, while the actual reason is discarded.
+   */
+  if (isTerminal(current.status)) return false;
+
   const cancelled = error.code === 'ABORTED';
   state = {
     ...state,
-    session: { ...current, status: cancelled ? 'cancelled' : 'failed', detail: undefined },
+    session: touch(current, { status: cancelled ? 'cancelled' : 'failed', detail: undefined }),
     error: cancelled ? null : error,
   };
   publish();
@@ -172,13 +242,8 @@ export function clearAnalysis(): void {
 export function adoptAnalysis(analysis: MotionAnalysis, label: string): void {
   state = {
     session: {
-      id: `history-${Date.now()}`,
-      videoId: 'history',
-      sourceKind: 'upload',
-      label,
-      startedAt: Date.now(),
+      ...newSession({ id: `history-${Date.now()}`, videoId: 'history', sourceKind: 'upload', label }),
       status: 'completed',
-      completedStages: [],
     },
     analysis,
     source: null,

@@ -2,6 +2,7 @@ import { VIDEO } from '../config.ts';
 import { resolveAdapter } from '../sites/registry.ts';
 import type { DetectedVideo } from '../types/video.ts';
 import { probeFrameAccess } from './frame-access.ts';
+import { isConfident, scoreVideo } from './scoring.ts';
 
 /**
  * Every video this frame can see, and a stable identity for each.
@@ -14,8 +15,8 @@ import { probeFrameAccess } from './frame-access.ts';
  *
  * Identity is therefore a token attached to the element itself via a WeakMap,
  * invalidated when the element's source changes — which is exactly what happens
- * when YouTube swaps in an ad, or a feed recycles a tile for the next post.
- * Every id is prefixed with a per-frame token so ids stay unique across the
+ * when a feed swaps the next clip into the player the user is already looking
+ * at. Every id is prefixed with a per-frame token so ids stay unique across the
  * several frames a page may inject this script into.
  */
 
@@ -27,6 +28,13 @@ interface Identity {
 }
 
 const identities = new WeakMap<HTMLVideoElement, Identity>();
+/** Last observed playhead, so "is this actually advancing" is answerable. */
+const observed = new WeakMap<HTMLVideoElement, { time: number; at: number }>();
+/** When the user last clicked or tapped this element. */
+const interactions = new WeakMap<HTMLVideoElement, number>();
+/** Elements already carrying lifecycle listeners, so they are attached once. */
+const wired = new WeakSet<HTMLVideoElement>();
+
 let counter = 0;
 
 const sourceKeyOf = (video: HTMLVideoElement): string => video.currentSrc || video.src || 'none';
@@ -39,10 +47,53 @@ function identify(video: HTMLVideoElement): string {
   // wrong clip after a feed scroll.
   if (existing && existing.sourceKey === sourceKey) return existing.id;
 
+  /**
+   * A source swap passes through an empty state: `emptied` fires, `currentSrc`
+   * clears, and the real source arrives a moment later. Minting an identity for
+   * that gap would churn two ids per swap and fire a spurious "video gone" for
+   * the intermediate one. An element between sources is not yet a different
+   * video, so the previous identity is held until a real source appears.
+   */
+  if (existing && sourceKey === 'none') return existing.id;
+
   counter += 1;
   const id = `${FRAME_TOKEN}-v${counter}`;
   identities.set(video, { id, sourceKey });
   return id;
+}
+
+/**
+ * Watches one element for the events that mean "this is a different video now".
+ *
+ * The reason this exists at all: a `MutationObserver` on `childList` cannot see
+ * a source swap performed in place, and neither can one watching the `src`
+ * attribute when the page drives playback through Media Source Extensions —
+ * there `currentSrc` is a blob URL that changes with no attribute mutation
+ * whatsoever. Instagram, TikTok and YouTube Shorts all recycle a single
+ * `<video>` element this way, so without these listeners the registry kept
+ * serving the previous clip's id and descriptor indefinitely. The
+ * re-identification logic was already correct; nothing ever triggered it.
+ */
+export function watchElement(video: HTMLVideoElement, onChange: () => void): void {
+  if (wired.has(video)) return;
+  wired.add(video);
+
+  for (const event of ['loadstart', 'loadedmetadata', 'durationchange', 'emptied', 'abort'] as const) {
+    video.addEventListener(event, onChange, { passive: true });
+  }
+  // Playback state feeds the active-video score, so a change to it changes
+  // which video the panel should be offering.
+  for (const event of ['play', 'pause', 'volumechange'] as const) {
+    video.addEventListener(event, onChange, { passive: true });
+  }
+
+  video.addEventListener(
+    'pointerdown',
+    () => {
+      interactions.set(video, Date.now());
+    },
+    { passive: true, capture: true },
+  );
 }
 
 /**
@@ -96,13 +147,32 @@ function isWorthOffering(video: HTMLVideoElement): boolean {
   return true;
 }
 
-function isVisible(video: HTMLVideoElement): boolean {
-  const rect = video.getBoundingClientRect();
-  if (rect.width < 2 || rect.height < 2) return false;
-  return rect.bottom > 0 && rect.right > 0 && rect.top < innerHeight && rect.left < innerWidth;
+/** Fraction of the element inside the viewport, 0–1. */
+function viewportRatio(rect: DOMRect): number {
+  const area = rect.width * rect.height;
+  if (area <= 0) return 0;
+  const visibleWidth = Math.max(0, Math.min(rect.right, innerWidth) - Math.max(rect.left, 0));
+  const visibleHeight = Math.max(0, Math.min(rect.bottom, innerHeight) - Math.max(rect.top, 0));
+  return (visibleWidth * visibleHeight) / area;
 }
 
-/** A blob: or MSE source cannot be re-fetched from anywhere else. */
+/**
+ * Has the playhead moved since we last looked?
+ *
+ * Distinguishes genuine playback from a stalled or buffering element, and from
+ * the muted decoy loops feeds place behind posters. Recorded on every snapshot
+ * so the next one has something to compare against.
+ */
+function isAdvancing(video: HTMLVideoElement): boolean {
+  const now = Date.now();
+  const previous = observed.get(video);
+  observed.set(video, { time: video.currentTime, at: now });
+  if (!previous) return false;
+  if (now - previous.at < 120) return !video.paused;
+  return video.currentTime > previous.time + 0.01;
+}
+
+/** A blob: or MSE source cannot be re-fetched from any other context. */
 function isStreaming(video: HTMLVideoElement): boolean {
   const source = sourceKeyOf(video);
   return source.startsWith('blob:') || source === 'none';
@@ -114,23 +184,54 @@ export interface Snapshot {
   siteLabel: string;
 }
 
-export function snapshot(options: { probe: boolean } = { probe: false }): Snapshot {
+export interface SnapshotOptions {
+  probe: boolean;
+  /**
+   * Called for every element found, before filtering.
+   *
+   * Takes the callback rather than letting the caller walk the DOM itself: the
+   * shadow-root traversal is the expensive part of a scan, and doing it twice
+   * per announce on a large page is pure waste. Watching is applied before
+   * `isWorthOffering` filters, so a video that is briefly zero-sized while its
+   * source swaps still gets listeners.
+   */
+  onElement?(video: HTMLVideoElement): void;
+}
+
+export function snapshot(options: SnapshotOptions = { probe: false }): Snapshot {
   const url = new URL(location.href);
   const adapter = resolveAdapter(url);
   const elements = new Map<string, HTMLVideoElement>();
-  const videos: DetectedVideo[] = [];
+  const viewportArea = Math.max(1, innerWidth * innerHeight);
 
-  const candidates = findVideoElements().filter(
+  const found = findVideoElements();
+  if (options.onElement) for (const video of found) options.onElement(video);
+
+  const candidates = found.filter(
     (video) => isWorthOffering(video) && (adapter.isContentVideo?.(video) ?? true),
   );
 
-  candidates.forEach((video, index) => {
+  const scored = candidates.map((video, index) => {
     const id = identify(video);
     elements.set(id, video);
 
+    const rect = video.getBoundingClientRect();
+    const ratio = viewportRatio(rect);
+    const interactedAt = interactions.get(video);
     const probe = options.probe ? probeFrameAccess(video) : { frameAccess: 'unknown' as const };
 
-    videos.push({
+    const activeScore = scoreVideo({
+      renderedArea: rect.width * rect.height,
+      viewportRatio: ratio,
+      viewportArea,
+      paused: video.paused,
+      muted: video.muted || video.volume === 0,
+      advancing: isAdvancing(video),
+      ...(interactedAt !== undefined ? { msSinceInteraction: Date.now() - interactedAt } : {}),
+      hasDuration: Number.isFinite(video.duration) && video.duration > 0,
+    });
+
+    const descriptor: DetectedVideo = {
       id,
       index,
       ...(video.src ? { src: video.src } : {}),
@@ -141,7 +242,7 @@ export function snapshot(options: { probe: boolean } = { probe: false }): Snapsh
       height: video.videoHeight,
       paused: video.paused,
       muted: video.muted,
-      visible: isVisible(video),
+      visible: ratio > 0.05 && rect.width > 2,
       frameAccess: probe.frameAccess,
       ...(probe.reason ? { frameAccessReason: probe.reason } : {}),
       streaming: isStreaming(video),
@@ -150,17 +251,20 @@ export function snapshot(options: { probe: boolean } = { probe: false }): Snapsh
       ...(video.poster ? { poster: video.poster } : {}),
       siteId: adapter.id,
       siteLabel: adapter.label,
-    });
+      activeScore,
+      likelyActive: false,
+    };
+
+    return descriptor;
   });
 
-  // The video the user is most likely looking at comes first: playing and
-  // visible beats visible beats everything else. `index` records document order
-  // separately, so nothing downstream depends on this ordering for identity.
-  videos.sort((a, b) => score(b) - score(a));
+  // Highest score first. `index` records document order separately, so nothing
+  // downstream depends on this ordering for identity.
+  scored.sort((a, b) => (b.activeScore ?? 0) - (a.activeScore ?? 0));
 
-  return { videos, elements, siteLabel: adapter.label };
-}
+  const confident = isConfident(scored.map((video) => video.activeScore ?? 0));
+  const leader = scored[0];
+  if (leader && confident) leader.likelyActive = true;
 
-function score(video: DetectedVideo): number {
-  return (video.visible ? 2 : 0) + (video.paused ? 0 : 2) + Math.min(1, video.width / 1920);
+  return { videos: scored, elements, siteLabel: adapter.label };
 }

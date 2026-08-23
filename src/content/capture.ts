@@ -1,5 +1,5 @@
 import { VIDEO } from '../config.ts';
-import { computeMetrics, toGrayscale, type FrameSample } from '../analysis/metrics.ts';
+import { accumulatePalette, computeMetrics, type FrameSample } from '../analysis/metrics.ts';
 import type { AnalysisFrameSize, FrameMetrics } from '../types/analysis.ts';
 import { localError } from '../utils/errors.ts';
 import { log } from '../utils/logger.ts';
@@ -26,6 +26,55 @@ interface PlaybackState {
 
 function capturePlaybackState(video: HTMLVideoElement): PlaybackState {
   return { currentTime: video.currentTime, paused: video.paused };
+}
+
+/**
+ * One scrub session per analysis, instead of one per sampling call.
+ *
+ * Every sampling call used to restore playback state in a `finally`. The
+ * pipeline calls `sampleFine` once per candidate — up to twenty-six times —
+ * plus coarse, medium, evidence, global and thumbnail passes. That was roughly
+ * thirty restores per analysis, each an awaited seek back to the user's
+ * position followed immediately by a seek away again: several seconds of pure
+ * overhead on streamed video, and the viewer watching their frame snap home and
+ * leave thirty times.
+ *
+ * The session is reference-counted rather than a plain flag so that a sampling
+ * call made outside an analysis still restores correctly on its own. The
+ * service worker takes the outer reference for the duration of the run, which
+ * holds the count above zero and defers every intermediate restore to the end.
+ */
+const sessions = new Map<HTMLVideoElement, { state: PlaybackState; depth: number }>();
+
+function acquire(video: HTMLVideoElement): void {
+  const existing = sessions.get(video);
+  if (existing) {
+    existing.depth += 1;
+    return;
+  }
+  sessions.set(video, { state: capturePlaybackState(video), depth: 1 });
+}
+
+async function release(video: HTMLVideoElement): Promise<void> {
+  const session = sessions.get(video);
+  if (!session) return;
+  session.depth -= 1;
+  if (session.depth > 0) return;
+  sessions.delete(video);
+  await restorePlaybackState(video, session.state);
+}
+
+/** Opened by the service worker for the length of an analysis. */
+export function beginScrubSession(video: HTMLVideoElement): void {
+  acquire(video);
+}
+
+/**
+ * Closed in the orchestrator's `finally`, so the playhead comes home whether
+ * the run completed, failed, or was cancelled mid-seek.
+ */
+export async function endScrubSession(video: HTMLVideoElement): Promise<void> {
+  await release(video);
 }
 
 export async function restorePlaybackState(video: HTMLVideoElement, state: PlaybackState): Promise<void> {
@@ -76,14 +125,22 @@ export function seekTo(video: HTMLVideoElement, time: number): Promise<number> {
   });
 }
 
-function drawGray(
+/**
+ * RGBA rather than grayscale.
+ *
+ * Grayscale alone is blind to a grade change — a warm-to-cool shift at constant
+ * brightness moves no luma histogram at all — so the colour signal has to
+ * survive this far. The buffer is 9KB per frame at analysis resolution, which
+ * is not worth optimising away.
+ */
+function drawFrame(
   video: HTMLVideoElement,
   context: OffscreenCanvasRenderingContext2D,
   size: AnalysisFrameSize,
 ): Uint8Array {
   context.drawImage(video, 0, 0, size.width, size.height);
   const { data } = context.getImageData(0, 0, size.width, size.height);
-  return toGrayscale(data, size.width, size.height);
+  return new Uint8Array(data.buffer.slice(0));
 }
 
 /**
@@ -99,14 +156,14 @@ export async function sampleMetrics(
   timestamps: number[],
   size: AnalysisFrameSize,
   signal: AbortSignal,
-): Promise<FrameMetrics[]> {
-  if (timestamps.length === 0) return [];
+): Promise<{ metrics: FrameMetrics[]; palette: number[] }> {
+  if (timestamps.length === 0) return { metrics: [], palette: [] };
 
   const canvas = new OffscreenCanvas(size.width, size.height);
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw localError('VIDEO_INACCESSIBLE');
 
-  const state = capturePlaybackState(video);
+  acquire(video);
   const samples: FrameSample[] = [];
   let failures = 0;
 
@@ -119,7 +176,7 @@ export async function sampleMetrics(
       if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
       try {
         const actual = await seekTo(video, timestamp);
-        samples.push({ time: actual, gray: drawGray(video, context, size), width: size.width, height: size.height });
+        samples.push({ time: actual, rgba: drawFrame(video, context, size), width: size.width, height: size.height });
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') throw error;
         failures += 1;
@@ -128,11 +185,13 @@ export async function sampleMetrics(
     }
   } finally {
     // Restoring is not conditional on success. A cancelled analysis that leaves
-    // someone's video parked at 00:04 is a bug, not a detail.
-    await restorePlaybackState(video, state);
+    // someone's video parked at 00:04 is a bug, not a detail — but with a
+    // session open the restore is deferred to the end of the run rather than
+    // happening between every pass.
+    await release(video);
   }
 
-  return computeMetrics(samples);
+  return { metrics: computeMetrics(samples), palette: [...accumulatePalette(samples)] };
 }
 
 async function blobToDataUrl(blob: Blob): Promise<string> {
@@ -162,7 +221,7 @@ export async function captureFrames(
   const context = canvas.getContext('2d');
   if (!context) throw localError('VIDEO_INACCESSIBLE');
 
-  const state = capturePlaybackState(video);
+  acquire(video);
   const frames: Array<{ id: string; time: number; dataUrl: string }> = [];
 
   try {
@@ -180,7 +239,7 @@ export async function captureFrames(
       }
     }
   } finally {
-    await restorePlaybackState(video, state);
+    await release(video);
   }
 
   return frames;

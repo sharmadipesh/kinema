@@ -4,7 +4,20 @@
  * retuned without a hunt.
  */
 
-export const APP_NAME = 'Motion Inspector';
+/**
+ * The product name, in one place.
+ *
+ * Everything a user can read comes from here. It was previously duplicated as a
+ * literal in the panel header, the manifest and the error copy, and the copy
+ * had already drifted: the header said "Motion Inspector" while six error and
+ * empty states said "KINEMA". One constant means the two can no longer
+ * disagree, and changing the name is a one-line change rather than a hunt.
+ *
+ * Deliberately *not* the package name, the log prefix, or the IndexedDB
+ * database name. Those are internal, and renaming the database in particular
+ * would orphan every stored frame for no user-visible gain.
+ */
+export const APP_NAME = 'KINEMA';
 export const LOG_PREFIX = '[MotionInspector]';
 
 export const EXTENSION_VERSION = __EXTENSION_VERSION__;
@@ -15,6 +28,15 @@ export const STORAGE = {
   settingsKey: 'mi:settings',
   historyKey: 'mi:history',
   sessionKey: 'mi:session',
+  artifactsKey: 'mi:artifacts',
+  /**
+   * The user's own layer over an analysis: recreation mode, brief, stage edits,
+   * footage status and manual confirmations. Suffixed with the analysis id.
+   *
+   * Separate from `historyKey` on purpose — a retry rewrites the analysis
+   * wholesale, and hand edits have to survive that.
+   */
+  projectKey: 'mi:project',
   // NOTE: the credential storage key is deliberately NOT here. This module is
   // reachable from the content bundle, and a constant here would land in the
   // page bundle — which the build's leak guard rightly rejects. It lives in

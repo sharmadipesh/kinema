@@ -18,18 +18,27 @@ type Filter = MotionCategory | 'all';
 const PAGE = 25;
 
 export function EventList({
-  events,
+  events: allEvents,
   activeEventId,
+  categoryFilter,
+  onCategoryFilter,
   onOpen,
   onJump,
 }: {
   events: MotionEvent[];
   activeEventId: string | null;
+  /** Driven from the Transitions inventory, so the two stay in step. */
+  categoryFilter: MotionCategory | null;
+  onCategoryFilter(category: MotionCategory | null): void;
   onOpen(event: MotionEvent): void;
   onJump(event: MotionEvent): void;
 }) {
+  // Secondary events explain a primary inside its detail view; listing them
+  // here would flood the timeline with one fact reported three ways.
+  const events = useMemo(() => allEvents.filter((event) => event.role === 'primary'), [allEvents]);
   const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<Filter>('all');
+  const filter: Filter = categoryFilter ?? 'all';
+  const setFilter = (next: Filter): void => onCategoryFilter(next === 'all' ? null : next);
   const [limit, setLimit] = useState(PAGE);
   const sentinel = useRef<HTMLDivElement>(null);
 
@@ -87,7 +96,7 @@ export function EventList({
             value={filter}
             options={available}
             onChange={setFilter}
-            scrollable
+            wrap
           />
         </div>
       ) : null}

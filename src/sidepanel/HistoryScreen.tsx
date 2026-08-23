@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { EmptyState } from '../components/EmptyState.tsx';
 import { FilmIcon, SearchIcon, TrashIcon } from '../components/Icons.tsx';
 import { deleteFrames } from '../storage/frame-store.ts';
+import { deleteProject } from '../storage/project.ts';
 import { onHistoryChanged, readHistory, removeHistoryItem } from '../storage/history.ts';
 import type { AnalysisHistoryItem } from '../types/domain.ts';
 import { formatClock, relativeTime } from '../utils/time.ts';
@@ -34,6 +35,9 @@ export function HistoryScreen({ onOpen }: { onOpen(item: AnalysisHistoryItem): v
   const remove = async (item: AnalysisHistoryItem): Promise<void> => {
     await removeHistoryItem(item.id);
     await deleteFrames(item.id);
+    // Three stores hold pieces of one analysis, and a delete that clears two of
+    // them leaves the user's own edits behind with nothing to attach to.
+    await deleteProject(item.id);
   };
 
   if (items.length === 0) {

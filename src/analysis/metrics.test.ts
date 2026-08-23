@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  chromaHistogram,
   describeDirection,
   edgeDensity,
   estimateMotion,
@@ -46,6 +47,19 @@ function bars(offset: number): Uint8Array {
     }
   }
   return gray;
+}
+
+/** Lifts a grayscale buffer into the RGBA form `computeMetrics` now consumes. */
+function rgbaOf(gray: Uint8Array, tint: [number, number, number] = [1, 1, 1]): Uint8Array {
+  const rgba = new Uint8Array(gray.length * 4);
+  for (let pixel = 0; pixel < gray.length; pixel += 1) {
+    const value = gray[pixel] ?? 0;
+    rgba[pixel * 4] = Math.min(255, value * tint[0]);
+    rgba[pixel * 4 + 1] = Math.min(255, value * tint[1]);
+    rgba[pixel * 4 + 2] = Math.min(255, value * tint[2]);
+    rgba[pixel * 4 + 3] = 255;
+  }
+  return rgba;
 }
 
 describe('toGrayscale', () => {
@@ -128,6 +142,23 @@ describe('estimateMotion', () => {
     expect(estimate.magnitude).toBe(0);
   });
 
+  it('recovers fast motion a single-level search could not reach', () => {
+    // The old single-level +/-6 search saturated at about 9% of frame width per
+    // sample, so every genuinely fast movement reported the same magnitude and
+    // a whip pan was indistinguishable from a brisk pan. The pyramid reaches
+    // roughly +/-14.
+    const fast = estimateMotion(texture(0), texture(10), W, H);
+    expect(fast.dx).toBeCloseTo(10, 0);
+    expect(fast.magnitude).toBeGreaterThan(6 / W);
+  });
+
+  it('flags saturation instead of silently reporting its own ceiling', () => {
+    // Beyond the search range the honest answer is "at least this fast", and
+    // the flag is what stops the number being read as a measurement.
+    const beyond = estimateMotion(texture(0), texture(22), W, H);
+    expect(beyond.saturated).toBe(true);
+  });
+
   it('resolves a tie toward zero rather than picking an extreme', () => {
     // Vertical bars carry no vertical information: every dy matches equally.
     // Answering -6 there would be an invented vector, so it must answer 0.
@@ -138,43 +169,83 @@ describe('estimateMotion', () => {
 });
 
 describe('describeDirection', () => {
+  const estimate = (dx: number, dy: number, divergence = 0) => ({
+    dx,
+    dy,
+    magnitude: Math.hypot(dx, dy) / W,
+    divergence,
+    saturated: false,
+  });
+
   it('names a rightward pan', () => {
-    expect(describeDirection({ dx: 5, dy: 0, magnitude: 0.08, divergence: 0 }, W)).toBe('right');
+    expect(describeDirection(estimate(5, 0), W)).toBe('right');
   });
 
   it('names a leftward pan', () => {
-    expect(describeDirection({ dx: -5, dy: 0, magnitude: 0.08, divergence: 0 }, W)).toBe('left');
+    expect(describeDirection(estimate(-5, 0), W)).toBe('left');
   });
 
   it('refuses to name a direction when nothing meaningfully moved', () => {
     // Fabricated precision is the failure mode this guards against.
-    expect(describeDirection({ dx: 0.2, dy: 0.1, magnitude: 0.001, divergence: 0 }, W)).toBeUndefined();
+    expect(describeDirection(estimate(0.2, 0.1), W)).toBeUndefined();
   });
 
   it('calls a strong radial component a zoom rather than a pan', () => {
-    expect(describeDirection({ dx: 0.2, dy: 0, magnitude: 0.01, divergence: 0.5 }, W)).toBe('outward');
-    expect(describeDirection({ dx: 0.2, dy: 0, magnitude: 0.01, divergence: -0.5 }, W)).toBe('inward');
+    expect(describeDirection(estimate(0.2, 0, 1), W)).toBe('outward');
+    expect(describeDirection(estimate(0.2, 0, -1), W)).toBe('inward');
+  });
+});
+
+describe('chromaHistogram', () => {
+  it('sees a grade shift that luma is blind to', () => {
+    // Warm vs cool at matched brightness: the luma histogram barely moves, and
+    // a luma-only pipeline reports no event at all.
+    const gray = texture(0);
+    const warm = rgbaOf(gray, [1.25, 1, 0.7]);
+    const cool = rgbaOf(gray, [0.7, 1, 1.25]);
+
+    const chroma = histogramDistance(chromaHistogram(warm, W * H), chromaHistogram(cool, W * H));
+    const luma = histogramDistance(
+      histogram(toGrayscale(warm, W, H)),
+      histogram(toGrayscale(cool, W, H)),
+    );
+
+    expect(chroma).toBeGreaterThan(0.2);
+    expect(chroma).toBeGreaterThan(luma * 2);
   });
 });
 
 describe('computeMetrics', () => {
+  const sample = (time: number, gray: Uint8Array) => ({ time, rgba: rgbaOf(gray), width: W, height: H });
+
   it('zeroes the first frame, which has no predecessor', () => {
-    const metrics = computeMetrics([
-      { time: 0, gray: bars(0), width: W, height: H },
-      { time: 0.5, gray: blank(255), width: W, height: H },
-    ]);
+    const metrics = computeMetrics([sample(0, bars(0)), sample(0.5, blank(255))]);
     expect(metrics[0]?.diff).toBe(0);
     expect(metrics[0]?.histDiff).toBe(0);
+    expect(metrics[0]?.interval).toBe(0);
     expect(metrics[1]?.diff).toBeGreaterThan(0.3);
   });
 
   it('records a signed luminance change', () => {
-    const metrics = computeMetrics([
-      { time: 0, gray: blank(20), width: W, height: H },
-      { time: 1, gray: blank(220), width: W, height: H },
-      { time: 2, gray: blank(20), width: W, height: H },
-    ]);
+    const metrics = computeMetrics([sample(0, blank(20)), sample(1, blank(220)), sample(2, blank(20))]);
     expect(metrics[1]?.lumaDelta).toBeGreaterThan(0.7);
     expect(metrics[2]?.lumaDelta).toBeLessThan(-0.7);
+  });
+
+  it('reports velocity per second, so uneven sampling stays comparable', () => {
+    // The same displacement over half the interval is twice the velocity. Once
+    // the sampler adapts its rate, per-sample displacement stops meaning
+    // anything on its own.
+    const slow = computeMetrics([sample(0, texture(0)), sample(1.0, texture(4))]);
+    const fast = computeMetrics([sample(0, texture(0)), sample(0.5, texture(4))]);
+
+    expect(slow[1]?.motionMagnitude).toBeCloseTo(fast[1]?.motionMagnitude ?? 0, 5);
+    expect(fast[1]?.motionVelocity).toBeCloseTo((slow[1]?.motionVelocity ?? 0) * 2, 3);
+  });
+
+  it('reports an edge collapse when the frame goes soft', () => {
+    // The only direct evidence of motion blur available from pixels alone.
+    const metrics = computeMetrics([sample(0, texture(0)), sample(0.1, blank(128))]);
+    expect(metrics[1]?.edgeDelta).toBeLessThan(-0.1);
   });
 });

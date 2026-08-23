@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { MotionIcon } from '../components/Icons.tsx';
-import { EXTENSION_VERSION } from '../config.ts';
+import { APP_NAME, EXTENSION_VERSION } from '../config.ts';
 import { useBackground } from '../hooks/useBackground.ts';
 import { useTheme } from '../hooks/useTheme.ts';
 import { checkConnection } from '../services/transport/openai-transport.ts';
@@ -18,7 +18,7 @@ type View = 'analyze' | 'history' | 'settings';
 const EMPTY_STATE: PanelState = { session: null, analysis: null, source: null, error: null };
 
 export function SidePanel() {
-  const { request, subscribe } = useBackground();
+  const { request, subscribe, generation } = useBackground();
   const [view, setView] = useState<View>('analyze');
   const [settings, setSettings] = useState<Settings | null>(null);
   const [state, setState] = useState<PanelState>(EMPTY_STATE);
@@ -48,11 +48,20 @@ export function SidePanel() {
   // The service worker is the source of truth for session state, so the panel
   // adopts whatever it finds on connect — reopening the panel mid-analysis
   // shows the run still going, not a blank screen.
+  /**
+   * Re-asked on every reconnect, not only on mount.
+   *
+   * `generation` increments whenever the port is rebuilt. Without it, a service
+   * worker suspended mid-analysis would restart, correctly mark the orphaned
+   * session failed during hydration — and the panel would never find out,
+   * displaying the last stage it happened to see, indefinitely. The counter was
+   * already being produced; nothing consumed it.
+   */
   useEffect(() => {
     void request<PanelResponse & { for: 'panel:get-state' }>({ type: 'panel:get-state' })
       .then((response) => setState(response.state))
       .catch(() => undefined);
-  }, [request]);
+  }, [request, generation]);
 
   useEffect(
     () =>
@@ -75,7 +84,7 @@ export function SidePanel() {
       <header className="shrink-0 border-b border-line px-3.5 pb-2 pt-3.5">
         <div className="mb-2.5 flex items-baseline gap-1.5">
           <MotionIcon size={13} className="self-center text-accent" />
-          <h1 className="text-md font-semibold tracking-tight text-ink">Motion Inspector</h1>
+          <h1 className="text-md font-semibold tracking-tight text-ink">{APP_NAME}</h1>
           <span className="tabular text-2xs text-ink-subtle">v{EXTENSION_VERSION}</span>
         </div>
 

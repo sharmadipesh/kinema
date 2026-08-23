@@ -1,8 +1,8 @@
+import { APP_NAME } from '../config.ts';
 import { Segmented } from '../components/ui/Segmented.tsx';
-import { clearFrames } from '../storage/frame-store.ts';
-import { clearHistory } from '../storage/history.ts';
 import type { Settings, ThemePreference } from '../types/domain.ts';
 import { ApiKeyField } from './ApiKeyField.tsx';
+import { StorageSection } from './StorageSection.tsx';
 
 export function SettingsPanel({
   settings,
@@ -15,7 +15,7 @@ export function SettingsPanel({
 }) {
   return (
     <div className="space-y-5 px-3.5 pb-5 pt-2">
-      <Section title="Connection" description="Motion Inspector uses your own OpenAI key. There is no server.">
+      <Section title="Connection" description={`${APP_NAME} uses your own OpenAI key. There is no server.`}>
         <ApiKeyField onChanged={onConnectionChange} />
       </Section>
 
@@ -71,23 +71,8 @@ export function SettingsPanel({
         </Field>
       </Section>
 
-      <Section title="Data" description="Everything Motion Inspector keeps lives on this device.">
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            type="button"
-            onClick={() => {
-              void clearHistory();
-              void clearFrames();
-            }}
-            className="rounded-sm border border-line bg-surface-raised px-2 py-1 text-xs text-ink transition-colors hover:bg-[var(--mi-hover)]"
-          >
-            Clear history and frames
-          </button>
-        </div>
-        <p className="text-2xs leading-relaxed text-ink-subtle">
-          Analyses are stored locally and never leave this device. During an analysis, a small number of sampled frames
-          are sent to OpenAI using your key — the video file itself never is.
-        </p>
+      <Section title="Data" description={`Everything ${APP_NAME} keeps lives on this device.`}>
+        <StorageSection />
       </Section>
     </div>
   );

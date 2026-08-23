@@ -20,13 +20,26 @@ export async function readHistory(): Promise<AnalysisHistoryItem[]> {
     const stored = await chrome.storage.local.get(STORAGE.historyKey);
     const raw = stored[STORAGE.historyKey];
     if (!Array.isArray(raw)) return [];
-    return raw.filter(isHistoryItem).slice(0, STORAGE.maxHistoryItems);
+    return raw.filter(isHistoryItem).map(withAnalysisId).slice(0, STORAGE.maxHistoryItems);
   } catch (error) {
     log.warn('history read failed', { error: String(error) });
     return [];
   }
 }
 
+/**
+ * Writes an entry, and never lets the attempt cost the analysis.
+ *
+ * This runs at the very end of a successful run, after every model call has
+ * been paid for. `chrome.storage.local` is 10MB and an entry now carries a full
+ * production blueprint, so a quota rejection here is real — and it used to
+ * propagate into the orchestrator's catch, mark the session failed, and hand
+ * the user an error for work that had completely succeeded.
+ *
+ * On a quota failure the oldest half of the library is dropped and the write is
+ * retried once. Losing old entries to keep the new one is the right trade: the
+ * new one is the thing the user is looking at.
+ */
 export async function addHistoryItem(item: AnalysisHistoryItem): Promise<AnalysisHistoryItem> {
   // A thumbnail over budget is dropped rather than stored: a missing preview is
   // a cosmetic loss, a blown quota loses the whole library.
@@ -41,7 +54,19 @@ export async function addHistoryItem(item: AnalysisHistoryItem): Promise<Analysi
   const deduped = existing.filter((entry) => !(entry.url && entry.url === stored.url && entry.title === stored.title));
   const next = [stored, ...deduped].slice(0, STORAGE.maxHistoryItems);
 
-  await chrome.storage.local.set({ [STORAGE.historyKey]: next });
+  try {
+    await chrome.storage.local.set({ [STORAGE.historyKey]: next });
+  } catch (error) {
+    log.warn('history write failed, retrying with a trimmed library', { error: String(error) });
+    const trimmed = [stored, ...deduped.slice(0, Math.floor(deduped.length / 2))];
+    try {
+      await chrome.storage.local.set({ [STORAGE.historyKey]: trimmed });
+    } catch (retryError) {
+      // Still no. The analysis itself is already complete and on screen; a
+      // missing History row is a smaller loss than a failed run.
+      log.warn('history write abandoned', { error: String(retryError) });
+    }
+  }
   return stored;
 }
 
@@ -63,6 +88,19 @@ export function onHistoryChanged(listener: (items: AnalysisHistoryItem[]) => voi
   };
   chrome.storage.onChanged.addListener(handler);
   return () => chrome.storage.onChanged.removeListener(handler);
+}
+
+/**
+ * Read-side migration for entries written before `MotionAnalysis.id` existed.
+ *
+ * The entry id has always been the analysis id — it is what the frames were
+ * stored under — so an older entry is repaired rather than discarded. Doing it
+ * on read keeps one code path: nothing downstream has to ask how old an entry
+ * is, and no rewrite of the whole library is needed on upgrade.
+ */
+function withAnalysisId(item: AnalysisHistoryItem): AnalysisHistoryItem {
+  if (item.analysis.id) return item;
+  return { ...item, analysis: { ...item.analysis, id: item.id } };
 }
 
 export function isHistoryItem(value: unknown): value is AnalysisHistoryItem {

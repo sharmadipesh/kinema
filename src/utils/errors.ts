@@ -1,3 +1,4 @@
+import { APP_NAME } from '../config.ts';
 import type { FriendlyError } from '../types/domain.ts';
 
 /**
@@ -87,6 +88,13 @@ const LOCAL_MESSAGES = {
     message: 'No video is available on this page any more.',
     retryable: false,
   },
+  VIDEO_REPLACED: {
+    code: 'VIDEO_REPLACED',
+    // Routine on a feed, so the copy explains rather than alarms.
+    message:
+      'The video changed or was removed from the page while KINEMA was analysing it. Detect the current video and start again.',
+    retryable: false,
+  },
   VIDEO_GONE: {
     code: 'VIDEO_GONE',
     message: 'That video is no longer on the page.',
@@ -134,7 +142,7 @@ const LOCAL_MESSAGES = {
   },
   TAB_UNREACHABLE: {
     code: 'TAB_UNREACHABLE',
-    message: "Motion Inspector can't read this tab. Open a normal web page and try again.",
+    message: `${APP_NAME} can't read this tab. Open a normal web page and try again.`,
     retryable: false,
   },
   PAGE_PERMISSION: {
@@ -144,7 +152,7 @@ const LOCAL_MESSAGES = {
     // the extension there. Switching tabs with the panel already open leaves
     // the new tab ungranted, and clicking the toolbar icon is genuinely the fix.
     message:
-      'Motion Inspector needs permission for this tab. Click the Motion Inspector toolbar icon on it, then detect again.',
+      `${APP_NAME} needs permission for this tab. Click the ${APP_NAME} toolbar icon on it, then detect again.`,
     retryable: true,
   },
 } as const satisfies Record<string, FriendlyError>;

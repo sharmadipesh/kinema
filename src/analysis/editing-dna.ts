@@ -1,4 +1,4 @@
-import type { DnaTrait, EditingDNA, MotionEvent, VideoOverview } from '../types/motion.ts';
+import type { DnaTrait, EditRhythm, EditingDNA, MotionEvent, Scene, VideoOverview } from '../types/motion.ts';
 
 /**
  * Editing DNA — six traits derived from the event list.
@@ -57,11 +57,11 @@ function LOW_TO_HIGH(): Array<{ upTo: number; label: string }> {
 
 const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
 
-function trait(dnaTrait: DnaTrait, rawValue: number): { value: number; label: string } {
+function trait(dnaTrait: DnaTrait, rawValue: number, why: string): { value: number; label: string; why: string } {
   const spec = SPECS[dnaTrait];
   const value = clamp01(rawValue / spec.full);
   const label = spec.bands.find((band) => value <= band.upTo)?.label ?? spec.bands[spec.bands.length - 1]?.label ?? '—';
-  return { value: Number(value.toFixed(3)), label };
+  return { value: Number(value.toFixed(3)), label, why };
 }
 
 function perMinute(count: number, duration: number): number {
@@ -81,11 +81,32 @@ export function countByCategory(events: MotionEvent[]) {
   };
 }
 
-export function deriveEditingDNA(events: MotionEvent[], duration: number): EditingDNA {
+/**
+ * Six traits, each with the sentence that makes it checkable.
+ *
+ * The `why` strings are built from the same numbers as the bars, so a reader
+ * can disagree with the reasoning rather than only with the result. A bar on
+ * its own asks to be trusted; "11 shots across 18 seconds" can be argued with,
+ * which is the more useful property. The model may supply a better-written
+ * sentence during reconciliation, but never a different number.
+ */
+export function deriveEditingDNA(
+  events: MotionEvent[],
+  duration: number,
+  scenes: Scene[] = [],
+  notes: Partial<Record<DnaTrait, string>> = {},
+): EditingDNA {
   const counts = countByCategory(events);
-  // Pacing counts every shot change, however it was achieved — a hard cut and a
-  // whip-pan transition both move the viewer to a new shot.
-  const shotChanges = counts.cuts + counts.transitions;
+
+  /**
+   * Pacing now comes from shot boundaries rather than event counts.
+   *
+   * Counting events conflated "a lot happened" with "the edit cuts fast" — a
+   * single long take full of camera moves scored as fast pacing. Shots are the
+   * unit pacing is actually made of.
+   */
+  const shotChanges = scenes.length > 1 ? scenes.length - 1 : counts.cuts + counts.transitions;
+  const cutsPerMin = perMinute(shotChanges, duration);
 
   const motionSamples = events
     .map((event) => event.evidence?.motionMagnitude)
@@ -94,20 +115,82 @@ export function deriveEditingDNA(events: MotionEvent[], duration: number): Editi
   const meanMotion = motionSamples.length
     ? motionSamples.reduce((sum, value) => sum + value, 0) / motionSamples.length / 0.08
     : 0;
+  const movingShots = scenes.filter((scene) => scene.motionLevel > 0.012).length;
+
+  const seconds = Math.max(duration, 1);
+  const pick = (key: DnaTrait, fallback: string): string => notes[key] ?? fallback;
 
   return {
-    pacing: trait('pacing', perMinute(shotChanges, duration)),
-    cuts: trait('cuts', perMinute(counts.cuts, duration)),
-    motion: trait('motion', meanMotion),
-    text: trait('text', perMinute(counts.text, duration)),
-    transitions: trait('transitions', perMinute(counts.transitions, duration)),
-    effects: trait('effects', perMinute(counts.effects, duration)),
+    pacing: trait(
+      'pacing',
+      cutsPerMin,
+      pick(
+        'pacing',
+        scenes.length > 1
+          ? `${scenes.length} shots across ${seconds.toFixed(1)}s — about ${cutsPerMin.toFixed(0)} cuts per minute.`
+          : 'No shot boundaries were detected, so this reads as a single continuous take.',
+      ),
+    ),
+    cuts: trait(
+      'cuts',
+      perMinute(counts.cuts, duration),
+      pick('cuts', `${counts.cuts} hard cuts detected in ${seconds.toFixed(1)}s.`),
+    ),
+    motion: trait(
+      'motion',
+      meanMotion,
+      pick(
+        'motion',
+        scenes.length > 0
+          ? `Movement measured in ${movingShots} of ${scenes.length} shots.`
+          : `Mean measured movement across ${motionSamples.length} events.`,
+      ),
+    ),
+    text: trait(
+      'text',
+      perMinute(counts.text, duration),
+      pick('text', counts.text === 0 ? 'No typography events were detected.' : `${counts.text} typography events.`),
+    ),
+    transitions: trait(
+      'transitions',
+      perMinute(counts.transitions, duration),
+      pick(
+        'transitions',
+        counts.transitions === 0
+          ? 'Shots are joined by straight cuts throughout.'
+          : `${counts.transitions} joins used something other than a straight cut.`,
+      ),
+    ),
+    effects: trait(
+      'effects',
+      perMinute(counts.effects, duration),
+      pick('effects', counts.effects === 0 ? 'No distinct visual effects were detected.' : `${counts.effects} effect events.`),
+    ),
   };
 }
 
-export function deriveOverview(summary: string, events: MotionEvent[], duration: number): VideoOverview {
+export function deriveOverview(
+  summary: string,
+  events: MotionEvent[],
+  duration: number,
+  rhythm?: EditRhythm,
+): VideoOverview {
   const counts = countByCategory(events);
-  const dna = deriveEditingDNA(events, duration);
+  const dna = deriveEditingDNA(events, duration, [], {});
+  // Shot statistics, where they exist, beat an event-count estimate.
+  if (rhythm) {
+    const banded =
+      rhythm.density === 'very high' ? 'very fast' : rhythm.density === 'high' ? 'fast' : rhythm.density === 'moderate' ? 'moderate' : 'slow';
+    return {
+      summary,
+      pacing: banded,
+      sceneChanges: Math.max(counts.cuts, rhythm.shotCount - 1),
+      transitions: counts.transitions,
+      textAnimations: counts.text,
+      cameraMovements: counts.camera,
+      effects: counts.effects,
+    };
+  }
   const pacing =
     dna.pacing.label === 'Very fast'
       ? 'very fast'

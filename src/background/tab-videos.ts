@@ -1,6 +1,7 @@
 import type { ContentCommand, ContentReply, DetectionReport, Result } from '../types/messages.ts';
 import type { DetectedVideo } from '../types/video.ts';
 import { localError } from '../utils/errors.ts';
+import { withTimeout } from '../utils/schedule.ts';
 import { log } from '../utils/logger.ts';
 
 /**
@@ -24,6 +25,9 @@ interface TabRecord {
   pageUrl: string;
   updatedAt: number;
 }
+
+/** Long enough for a slow seek run, short enough to catch a dead handler. */
+const TAB_COMMAND_TIMEOUT_MS = 180_000;
 
 const tabs = new Map<number, TabRecord>();
 const injected = new Set<number>();
@@ -50,7 +54,24 @@ export function recordDetection(
   }
   for (const video of videos) record.frameOf.set(video.id, frameId);
 
-  record.videos = [...fromOtherFrames, ...videos].sort((a, b) => a.index - b.index);
+  /**
+   * Ordered by active score, not document order.
+   *
+   * `video-registry.ts` sorts by a measured active-video score and the panel
+   * presents the result as "likely current" first. Re-sorting by `index` here
+   * threw that away and handed the panel document order under a label claiming
+   * otherwise — and `index` is assigned per frame, so on a page with embeds the
+   * indices collide and the merge was arbitrary as well as wrong.
+   *
+   * Frame id then index break ties: the top frame wins, then document order
+   * within it, which is stable across re-detections.
+   */
+  record.videos = [...fromOtherFrames, ...videos].sort((a, b) => {
+    const byScore = (b.activeScore ?? 0) - (a.activeScore ?? 0);
+    if (byScore !== 0) return byScore;
+    const byFrame = (record.frameOf.get(a.id) ?? 0) - (record.frameOf.get(b.id) ?? 0);
+    return byFrame !== 0 ? byFrame : a.index - b.index;
+  });
   record.updatedAt = Date.now();
   // The top frame names the page; an embed should not overwrite that.
   if (frameId === 0) {
@@ -157,7 +178,17 @@ export async function commandFrame<T extends ContentReply>(
 ): Promise<T> {
   let response: Result<ContentReply> | undefined;
   try {
-    response = (await chrome.tabs.sendMessage(tabId, command, { frameId })) as Result<ContentReply> | undefined;
+    /**
+     * `tabs.sendMessage` rejects when the content script is *gone*, but not
+     * when it is present and its handler never calls `sendResponse` — a page
+     * navigating mid-analysis lands exactly there. Without this the service
+     * worker waits forever on a tab that has moved on.
+     */
+    response = (await withTimeout(
+      chrome.tabs.sendMessage(tabId, command, { frameId }) as Promise<Result<ContentReply> | undefined>,
+      TAB_COMMAND_TIMEOUT_MS,
+      `tab command ${command.type}`,
+    )) as Result<ContentReply> | undefined;
   } catch (error) {
     log.warn('tab command failed', { tabId, frameId, type: command.type, error: String(error) });
     throw localError('VIDEO_GONE');
